@@ -1,0 +1,12 @@
+{
+  "name": "Alphacord",
+  "description": "Comandos e atalhos personalizados para o Discord, feitos por AlphaGhat.",
+  "authors": [
+    { "name": "AlphaGhat" }
+  ],
+  "main": "index.js",
+  "hash": "1",
+  "vendetta": {
+    "icon": "ic_progress_wrench_24px"
+  }
+}
