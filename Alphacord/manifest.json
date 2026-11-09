@@ -5,7 +5,7 @@
     { "name": "AlphaGhat" }
   ],
   "main": "index.js",
-  "hash": "3",
+  "hash": "4",
   "vendetta": {
     "icon": "ic_progress_wrench_24px"
   }
