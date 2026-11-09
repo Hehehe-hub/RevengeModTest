@@ -155,12 +155,32 @@
 
   // Mensagem de verdade, na sua conta
   function sendReal(channelId, content) {
+    if (!MA || typeof MA.sendMessage !== "function") {
+      toast("Não encontrei a função de envio da sua conta.");
+      return;
+    }
+    let result;
     internal = true;
     try {
-      MA.sendMessage(channelId, { content: content, tts: false, invalidEmojis: [], validNonShortcutEmojis: [] });
+      // O contexto MA é necessário em versões do cliente que usam this internamente.
+      result = MA.sendMessage.call(MA, channelId, {
+        content: content,
+        tts: false,
+        invalidEmojis: [],
+        validNonShortcutEmojis: [],
+      });
+    } catch (e) {
+      toast("Falha ao enviar pela sua conta: " + erroTxt(e));
+      return;
     } finally {
       internal = false;
     }
+    if (result && typeof result.catch === "function") {
+      result.catch(function (e) {
+        toast("Falha ao enviar pela sua conta: " + erroTxt(e));
+      });
+    }
+    return result;
   }
 
   function out(c, text) {
@@ -372,14 +392,6 @@
         out(ctx, "Excluir o suspeito #" + s.num + " (" + clean(cap(s.nome)) + ")? Mande `sim` para confirmar. Qualquer outra coisa cancela.");
       },
     },
-    {
-      name: "tweet",
-      aliases: ["tweet", "paginas", "anotacoes"],
-      desc: "Abre o Tweet (suas anotações privadas e ferramentas)",
-      run: function (ctx) {
-        abrirTweet(ctx);
-      },
-    },
     cmdServidor(["criar canal"], "Cria um canal de texto, voz ou tópicos", '"nome" texto em Categoria', wikiCanal(), doCriarCanal),
     cmdServidor(
       ["deletar canal"], "Deleta um canal (pede confirmação)", '"nome"',
@@ -402,6 +414,21 @@
       ["deletar cargo"], "Deleta um cargo (pede confirmação)", '"Nome"',
       '**.deletar cargo**\nUse: `.deletar cargo "Nome do cargo"`\nVocê confirma numa telinha antes de apagar.',
       doDeletarCargo
+    ),
+    cmdServidor(
+      ["deletar cargos"], "Deleta vários cargos por nome (com confirmação)", "um nome por linha",
+      '**.deletar cargos**\nEnvie um nome de cargo por linha. A lista inteira aparece para confirmação antes de apagar.',
+      function (ctx, raw) { return doDeletarEmMassa(ctx, raw, "cargo"); }
+    ),
+    cmdServidor(
+      ["deletar canais"], "Deleta vários canais por nome (com confirmação)", "um nome por linha",
+      '**.deletar canais**\nEnvie um nome de canal por linha. A lista inteira aparece para confirmação antes de apagar.',
+      function (ctx, raw) { return doDeletarEmMassa(ctx, raw, "canal"); }
+    ),
+    cmdServidor(
+      ["deletar categorias"], "Deleta várias categorias por nome (com confirmação)", "uma categoria por linha",
+      '**.deletar categorias**\nEnvie uma categoria por linha. Os canais dentro delas não são apagados.',
+      function (ctx, raw) { return doDeletarEmMassa(ctx, raw, "categoria"); }
     ),
     {
       name: "trocar",
@@ -459,11 +486,11 @@
   // ===== Comandos com ponto (.sus, .help...) e respostas do fluxo =====
   function onSend(args, orig) {
     try {
-      if (internal) return orig.apply(null, args);
+      if (internal) return orig.apply(MA, args);
       const channelId = args[0];
       const msg = args[1];
       const text = msg && typeof msg.content === "string" ? msg.content.trim() : "";
-      if (!text) return orig.apply(null, args);
+      if (!text) return orig.apply(MA, args);
 
       if (pending && pending.expira < Date.now()) pending = null;
 
@@ -486,574 +513,10 @@
         handleAnswer(p, text).catch(function (e) {
           out(p, "Erro no Alphacord: " + ((e && e.message) || e));
         });
-        return ESCONDER_RESPOSTAS ? Promise.resolve() : orig.apply(null, args);
+        return ESCONDER_RESPOSTAS ? Promise.resolve() : orig.apply(MA, args);
       }
     } catch (e) {}
-    return orig.apply(null, args);
-  }
-
-  // ===== Aba Páginas: gerenciador privado de anotações =====
-  const React = vendetta.metro.common.React;
-  const RN = vendetta.metro.common.ReactNative;
-  const h = React.createElement;
-  const PKEY = "ALPHACORD_PAGINAS_V1";
-  const ALERT_KEY = "alphacord-paginas";
-  let paginas = { nodes: [] };
-  let paginasOk = false;
-  let paginasReady = Promise.resolve();
-  let paginasSaving = Promise.resolve();
-  let paginasTimer = null;
-
-  function mergeNodes(list) {
-    const map = {};
-    list.forEach(function (d) {
-      if (!d || !Array.isArray(d.nodes)) return;
-      d.nodes.forEach(function (n) {
-        const cur = map[n.uid];
-        if (!cur || (n.editadoEm || 0) > (cur.editadoEm || 0)) map[n.uid] = n;
-      });
-    });
-    return { nodes: Object.keys(map).map(function (k) { return map[k]; }) };
-  }
-
-  async function loadPaginas() {
-    const found = [];
-    const m = mmkv();
-    try {
-      if (m) {
-        const raw = await m.getItem(PKEY);
-        paginasOk = true;
-        if (raw) found.push(JSON.parse(raw));
-      }
-    } catch (e) {
-      paginasOk = false; // não sobrescreve se não conseguiu ler
-    }
-    try {
-      const raw = vendetta.plugin.storage.paginasJson;
-      if (raw) found.push(JSON.parse(raw));
-    } catch (e) {}
-    paginas = mergeNodes(found);
-    if (found.length) await savePaginas();
-  }
-
-  async function doSavePaginas() {
-    const json = JSON.stringify(paginas);
-    let ok = false;
-    try {
-      const m = mmkv();
-      if (m && paginasOk) {
-        const prev = await m.getItem(PKEY);
-        if (prev) {
-          let antes = 0;
-          try { antes = JSON.parse(prev).nodes.length; } catch (e) {}
-          // se vai diminuir (exclusão), guarda uma cópia de segurança
-          if (antes > paginas.nodes.length) await m.setItem(PKEY + "_ANTES_EXCLUIR", prev);
-        }
-        await m.setItem(PKEY, json);
-        ok = true;
-      }
-    } catch (e) {}
-    try {
-      vendetta.plugin.storage.paginasJson = json;
-      ok = true;
-    } catch (e) {}
-    return ok;
-  }
-
-  function savePaginas() {
-    paginasSaving = paginasSaving.then(doSavePaginas);
-    return paginasSaving;
-  }
-  function savePaginasSoon() {
-    clearTimeout(paginasTimer);
-    paginasTimer = setTimeout(function () { paginasTimer = null; savePaginas(); }, 800);
-  }
-  function flushPaginas() {
-    if (paginasTimer) {
-      clearTimeout(paginasTimer);
-      paginasTimer = null;
-      savePaginas();
-    }
-  }
-
-  function novoId() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-  }
-  function achar(id) {
-    return paginas.nodes.find(function (n) { return n.uid === id; });
-  }
-  function filhos(pai) {
-    return paginas.nodes
-      .filter(function (n) { return (n.pai || null) === pai; })
-      .sort(function (a, b) {
-        if (a.tipo !== b.tipo) return a.tipo === "caminho" ? -1 : 1;
-        return (a.criadoEm || 0) - (b.criadoEm || 0);
-      });
-  }
-  function descendentes(id) {
-    let r = [];
-    filhos(id).forEach(function (f) {
-      r.push(f);
-      r = r.concat(descendentes(f.uid));
-    });
-    return r;
-  }
-
-  function copiar(texto) {
-    try {
-      const cb = vendetta.metro.common.clipboard || findByProps("setString");
-            toast("Copiado!");
-      return;
-    } catch (e) {}
-    try {
-      RN.Clipboard.setString(texto);
-      toast("Copiado!");
-    } catch (e) {
-      toast("Não consegui copiar");
-    }
-  }
-
-  function mkStyles() {
-    const sc = (vendetta.ui && vendetta.ui.semanticColors) || {};
-    const ss = vendetta.metro.common.stylesheet;
-    const mk = (ss && ss.createThemedStyleSheet) || RN.StyleSheet.create;
-    const bg = sc.BACKGROUND_PRIMARY || "#1e1f22";
-    const bg2 = sc.BACKGROUND_SECONDARY || "#2b2d31";
-    const txt = sc.TEXT_NORMAL || "#f2f3f5";
-    const mut = sc.TEXT_MUTED || "#949ba4";
-    const acc = sc.TEXT_LINK || "#5865f2";
-    return mk({
-      root: { flex: 1, backgroundColor: bg },
-      topo: { flexDirection: "row", alignItems: "center", padding: 12, backgroundColor: bg2 },
-      migalhas: { flexGrow: 1 },
-      mig: { color: acc, fontSize: 15 },
-      migAtual: { color: txt, fontSize: 15, fontWeight: "bold" },
-      sep: { color: mut, fontSize: 15 },
-      sair: { color: "#ed4245", fontSize: 15, fontWeight: "bold", marginLeft: 12 },
-      secao: { color: mut, fontSize: 12, fontWeight: "bold", marginTop: 16, marginBottom: 6, marginHorizontal: 16 },
-      item: { padding: 14, marginHorizontal: 12, marginTop: 8, borderRadius: 8, backgroundColor: bg2 },
-      itemTxt: { color: txt, fontSize: 16 },
-      sub: { color: mut, fontSize: 13 },
-      vazio: { color: mut, textAlign: "center", marginTop: 24, marginBottom: 8 },
-      corpo: { padding: 16 },
-      texto: { color: txt, fontSize: 16, lineHeight: 24 },
-      codigo: { color: txt, backgroundColor: bg2, fontFamily: "monospace", fontSize: 15 },
-      input: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, minHeight: 160, textAlignVertical: "top" },
-      campo: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, marginHorizontal: 16, marginTop: 8 },
-      amostra: { height: 90, marginHorizontal: 16, marginTop: 16, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-      amostraTxt: { fontSize: 18, fontWeight: "bold" },
-      grade: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 16 },
-    });
-  }
-
-  // ----- peças de interface nativas do Discord (Forms) -----
-  function formsDoDiscord() {
-    return (vendetta.ui && vendetta.ui.components && vendetta.ui.components.Forms) || {};
-  }
-  function icone() {
-    for (let i = 0; i < arguments.length; i++) {
-      try {
-        const id = vendetta.ui.assets.getAssetIDByName(arguments[i]);
-        if (id) return id;
-      } catch (e) {}
-    }
-    return undefined;
-  }
-  function Linha(p, S) {
-    const F = formsDoDiscord();
-    const Row = F.FormRow;
-    if (Row) {
-      return h(Row, {
-        key: p.key,
-        label: p.label,
-        subLabel: p.sub,
-        leading: p.icone && Row.Icon ? h(Row.Icon, { source: p.icone }) : undefined,
-        trailing: p.arrow && Row.Arrow ? h(Row.Arrow, null) : undefined,
-        onPress: p.onPress,
-      });
-    }
-    return h(
-      RN.TouchableOpacity,
-      { key: p.key, style: S.item, onPress: p.onPress },
-      h(RN.Text, { style: S.itemTxt }, p.label),
-      p.sub ? h(RN.Text, { style: S.sub }, p.sub) : null
-    );
-  }
-  function Secao(key, titulo, filhosEl, S) {
-    const F = formsDoDiscord();
-    if (F.FormSection) return h(F.FormSection, { key: key, title: titulo }, filhosEl);
-    return h(RN.View, { key: key }, h(RN.Text, { style: S.secao }, titulo), filhosEl);
-  }
-
-  // ----- telinhas nativas de pergunta e de aceitar/cancelar -----
-  function pedirNome(titulo, inicial, botao, cb) {
-    vendetta.ui.alerts.showInputAlert({
-      title: titulo,
-      initialValue: inicial || "",
-      placeholder: "Nome",
-      confirmText: botao,
-      cancelText: "Cancelar",
-      onConfirm: function (v) {
-        const nome = String(v || "").trim();
-        if (!nome) return toast("Escreva um nome");
-        cb(nome);
-      },
-    });
-  }
-  function confirmar(titulo, texto, botao, fn) {
-    vendetta.ui.alerts.showConfirmationAlert({
-      title: titulo,
-      content: texto,
-      confirmText: botao,
-      cancelText: "Cancelar",
-      confirmColor: "red",
-      onConfirm: fn,
-    });
-  }
-
-  // ----- cores -----
-  function hexValido(s) {
-    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s);
-  }
-  function hsvHex(hh, s, v) {
-    const c = v * s;
-    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
-    const m = v - c;
-    let r = 0, g = 0, b = 0;
-    if (hh < 60) { r = c; g = x; }
-    else if (hh < 120) { r = x; g = c; }
-    else if (hh < 180) { g = c; b = x; }
-    else if (hh < 240) { g = x; b = c; }
-    else if (hh < 300) { r = x; b = c; }
-    else { r = c; b = x; }
-    return "#" + [r, g, b].map(function (k) {
-      return ("0" + Math.round((k + m) * 255).toString(16)).slice(-2);
-    }).join("");
-  }
-  function contraste(hex) {
-    const n = parseInt(hex.slice(1, 7), 16);
-    const lum = ((n >> 16) & 255) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114;
-    return lum > 150 ? "#000000" : "#ffffff";
-  }
-  function corInt(s) {
-    if (!s) return 0;
-    if (/^#?random$/i.test(s)) return Math.floor(Math.random() * 0xfffffe) + 1;
-    let m = String(s).match(/^#?([0-9a-f]{6})$/i);
-    if (m) return parseInt(m[1], 16);
-    m = String(s).match(/^#([0-9a-f]{3})$/i);
-    if (m) return parseInt(m[1].split("").map(function (d) { return d + d; }).join(""), 16);
-    return null;
-  }
-
-  const PRONTAS = [
-    ["Vermelho", "#ed4245"], ["Laranja", "#f57c00"], ["Amarelo", "#fee75c"], ["Verde", "#3ba55d"], ["Azul", "#3498db"],
-    ["Roxo", "#9b59b6"], ["Rosa", "#ff69b4"], ["Preto", "#000000"], ["Cinza", "#808080"], ["Branco", "#ffffff"],
-  ];
-
-  function CoresTela(props) {
-    const S = props.S;
-    const [matiz, setMatiz] = React.useState(130);
-    const [cor, setCor] = React.useState("#3ba55d");
-    const [campo, setCampo] = React.useState("#3BA55D");
-    const largura = RN.Dimensions.get("window").width - 32;
-    const grade = React.useMemo(function () {
-      const cel = [];
-      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) cel.push(hsvHex(matiz, c / 7, 1 - r * 0.12));
-      return cel;
-    }, [matiz]);
-
-    function escolher(hex) {
-      setCor(hex);
-      setCampo(hex.toUpperCase());
-    }
-
-    return h(
-      RN.ScrollView,
-      { style: { flex: 1 } },
-      h(RN.View, { style: [S.amostra, { backgroundColor: cor }] }, h(RN.Text, { style: [S.amostraTxt, { color: contraste(cor) }] }, cor.toUpperCase())),
-      Secao("matiz", "ESCOLHA O TOM", h(RN.View, { style: S.grade }, Array.apply(null, Array(16)).map(function (_, i) {
-        const hh = i * 22.5;
-        return h(RN.TouchableOpacity, {
-          key: i,
-          onPress: function () { setMatiz(hh); },
-          style: { width: largura / 16, height: 34, backgroundColor: hsvHex(hh, 1, 1) },
-        });
-      })), S),
-      Secao("tons", "CLARO, ESCURO E FORÇA", h(RN.View, { style: S.grade }, grade.map(function (hex, i) {
-        return h(RN.TouchableOpacity, {
-          key: i,
-          onPress: function () { escolher(hex); },
-          style: { width: largura / 8, height: 34, backgroundColor: hex },
-        });
-      })), S),
-      Secao("prontas", "CORES PRONTAS", h(RN.View, { style: S.grade }, PRONTAS.map(function (p) {
-        return h(RN.TouchableOpacity, {
-          key: p[0],
-          onPress: function () { escolher(p[1]); },
-          style: { width: 40, height: 40, borderRadius: 20, margin: 4, backgroundColor: p[1], borderWidth: 1, borderColor: "#888888" },
-        });
-      })), S),
-      Secao("codigo", "CÓDIGO (se você já tiver um)", h(RN.TextInput, {
-        style: S.campo,
-        value: campo,
-        autoCapitalize: "characters",
-        maxLength: 7,
-        onChangeText: function (t) {
-          setCampo(t);
-          if (/^#[0-9a-fA-F]{6}$/.test(t)) setCor(t.toLowerCase());
-        },
-      }), S),
-      Secao("acoes", "USAR A COR", [
-        Linha({ key: "c1", label: "Copiar o código da cor", sub: cor.toUpperCase(), icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar(cor.toUpperCase()); } }, S),
-        Linha({ key: "c2", label: "Copiar como texto colorido", sub: "[texto](" + cor + ")", icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar("[texto](" + cor + ")"); } }, S),
-        Linha({ key: "c3", label: "Cor aleatória", icone: icone("ic_refresh", "ic_sync_24px"), onPress: function () { escolher(hsvHex(Math.random() * 359, 0.5 + Math.random() * 0.5, 0.6 + Math.random() * 0.4)); } }, S),
-      ], S),
-      h(RN.View, { style: { height: 40 } })
-    );
-  }
-
-  // Texto da página: `crases` copiam ao tocar e [palavra](#cor) colore
-  function renderTexto(txt, S) {
-    if (!txt) return h(RN.Text, { style: S.vazio }, "Página vazia. Use Editar texto para escrever.");
-    const partes = txt.split(/(```[\s\S]*?```|`[^`\n]+`|\[[^\]\n]+\]\(#[0-9a-fA-F]{3,8}\))/);
-    return h(
-      RN.Text,
-      { style: S.texto },
-      partes.map(function (p, i) {
-        const bloco = p.length > 6 && p.indexOf("```") === 0;
-        if (bloco || (p.length > 2 && p.charAt(0) === "`" && p.charAt(p.length - 1) === "`")) {
-          const cod = bloco ? p.slice(3, -3).replace(/^\n/, "") : p.slice(1, -1);
-          return h(RN.Text, { key: i, style: S.codigo, onPress: function () { copiar(cod); } }, " " + cod + " ");
-        }
-        const cor = p.match(/^\[([^\]\n]+)\]\((#[0-9a-fA-F]{3,8})\)$/);
-        if (cor && hexValido(cor[2])) return h(RN.Text, { key: i, style: { color: cor[2] } }, cor[1]);
-        return p;
-      })
-    );
-  }
-
-  // ----- tela principal do Tweet -----
-  function TweetApp(props) {
-    const S = React.useMemo(mkStyles, []);
-    const force = React.useReducer(function (x) { return x + 1; }, 0)[1];
-    const [caminho, setCaminho] = React.useState([]);
-    const [pagina, setPagina] = React.useState(null);
-    const [editando, setEditando] = React.useState(false);
-    const [tela, setTela] = React.useState("tweet");
-    const [carregado, setCarregado] = React.useState(false);
-
-    React.useEffect(function () {
-      paginasReady.then(function () { setCarregado(true); });
-      return function () { flushPaginas(); };
-    }, []);
-
-    const atual = caminho.length ? caminho[caminho.length - 1] : null;
-    const nodeAtual = atual ? achar(atual) : null;
-    const nodePagina = pagina ? achar(pagina) : null;
-
-    function irPara(n) {
-      setTela("tweet");
-      setPagina(null);
-      setEditando(false);
-      setCaminho(caminho.slice(0, n));
-    }
-    function voltar() {
-      if (tela === "cores") setTela("tweet");
-      else if (pagina) { setPagina(null); setEditando(false); }
-      else if (caminho.length) setCaminho(caminho.slice(0, -1));
-      else props.onClose();
-    }
-    function sair() {
-      flushPaginas();
-      props.onClose();
-    }
-
-    function adicionar(tipo) {
-      pedirNome(tipo === "pagina" ? "Nome da página" : "Nome do caminho", "", "Criar", function (nome) {
-        const agora = Date.now();
-        const no = { uid: novoId(), pai: atual, tipo: tipo, nome: nome, conteudo: "", criadoEm: agora, editadoEm: agora };
-        paginas.nodes.push(no);
-        savePaginas();
-        if (tipo === "pagina") { setPagina(no.uid); setEditando(true); }
-        force();
-      });
-    }
-    function renomear(n) {
-      pedirNome("Novo nome", n.nome, "Salvar", function (nome) {
-        n.nome = nome;
-        n.editadoEm = Date.now();
-        savePaginas();
-        force();
-      });
-    }
-    function excluir(n) {
-      const ids = {};
-      [n].concat(descendentes(n.uid)).forEach(function (x) { ids[x.uid] = true; });
-      paginas.nodes = paginas.nodes.filter(function (x) { return !ids[x.uid]; });
-      if (pagina === n.uid) { setPagina(null); setEditando(false); }
-      if (atual === n.uid) setCaminho(caminho.slice(0, -1));
-      savePaginas();
-      force();
-    }
-    function pedirExclusao(n) {
-      const txt = n.tipo === "caminho"
-        ? 'Excluir o caminho "' + n.nome + '" e tudo que está dentro dele (' + descendentes(n.uid).length + " itens)?"
-        : 'Excluir a página "' + n.nome + '"?';
-      confirmar("Excluir", txt, "Excluir", function () { excluir(n); });
-    }
-
-    // trilha: Tweet | Testes | Testes Plugins | 1
-    const migas = [{ label: "Tweet", fn: function () { irPara(0); } }];
-    caminho.forEach(function (id, i) {
-      const n = achar(id);
-      migas.push({ label: n ? n.nome : "?", fn: function () { irPara(i + 1); } });
-    });
-    if (tela === "cores") migas.push({ label: "Cores" });
-    else if (nodePagina) migas.push({ label: nodePagina.nome });
-
-    const topo = h(
-      RN.View,
-      { style: S.topo },
-      h(RN.TouchableOpacity, { onPress: voltar }, h(RN.Text, { style: S.mig }, "←  ")),
-      h(
-        RN.ScrollView,
-        { horizontal: true, style: S.migalhas, showsHorizontalScrollIndicator: false },
-        migas.map(function (m, i) {
-          const ultimo = i === migas.length - 1;
-          return h(
-            React.Fragment,
-            { key: i },
-            i > 0 ? h(RN.Text, { style: S.sep }, "  |  ") : null,
-            h(RN.TouchableOpacity, { onPress: ultimo ? undefined : m.fn }, h(RN.Text, { style: ultimo ? S.migAtual : S.mig }, m.label))
-          );
-        })
-      ),
-      h(RN.TouchableOpacity, { onPress: sair }, h(RN.Text, { style: S.sair }, "Sair"))
-    );
-
-    let corpo;
-    if (!carregado) {
-      corpo = h(RN.Text, { style: S.vazio }, "Carregando...");
-    } else if (tela === "cores") {
-      corpo = h(CoresTela, { S: S });
-    } else if (nodePagina) {
-      corpo = h(
-        RN.ScrollView,
-        { style: { flex: 1 }, keyboardShouldPersistTaps: "handled" },
-        Secao("pg", "PÁGINA", [
-          Linha({ key: "ed", label: editando ? "Concluir edição" : "Editar texto", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { setEditando(!editando); flushPaginas(); } }, S),
-          editando ? Linha({ key: "cor", label: "Abrir seletor de cores", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { flushPaginas(); setTela("cores"); } }, S) : null,
-          Linha({ key: "rn", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodePagina); } }, S),
-          Linha({ key: "ex", label: "Excluir página", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodePagina); } }, S),
-        ], S),
-        h(
-          RN.View,
-          { style: S.corpo },
-          editando
-            ? h(RN.TextInput, {
-                style: S.input,
-                multiline: true,
-                defaultValue: nodePagina.conteudo || "",
-                placeholder: "Escreva aqui. `crases` copiam ao tocar e [palavra](#cor) colore o texto.",
-                placeholderTextColor: "#888888",
-                onChangeText: function (t) {
-                  nodePagina.conteudo = t;
-                  nodePagina.editadoEm = Date.now();
-                  savePaginasSoon();
-                },
-              })
-            : renderTexto(nodePagina.conteudo || "", S)
-        ),
-        h(RN.View, { style: { height: 40 } })
-      );
-    } else {
-      const lista = filhos(atual);
-      corpo = h(
-        RN.ScrollView,
-        { style: { flex: 1 } },
-        Secao("add", "ADICIONAR", [
-          Linha({ key: "ap", label: "Adicionar página", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("pagina"); } }, S),
-          Linha({ key: "ac", label: "Adicionar caminho", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("caminho"); } }, S),
-        ], S),
-        Secao("itens", nodeAtual ? nodeAtual.nome.toUpperCase() : "TWEET", lista.length
-          ? lista.map(function (n) {
-              return Linha({
-                key: n.uid,
-                label: n.nome,
-                sub: n.tipo === "caminho" ? "Caminho" : "Página",
-                icone: n.tipo === "caminho" ? icone("ic_category", "ic_folder") : icone("ic_message_24px", "ic_text_channel"),
-                arrow: true,
-                onPress: function () { if (n.tipo === "caminho") setCaminho(caminho.concat(n.uid)); else setPagina(n.uid); },
-              }, S);
-            })
-          : h(RN.Text, { key: "v", style: S.vazio }, "Vazio por aqui. Use Adicionar acima."), S),
-        nodeAtual
-          ? Secao("este", "ESTE CAMINHO", [
-              Linha({ key: "r1", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodeAtual); } }, S),
-              Linha({ key: "r2", label: "Excluir caminho", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodeAtual); } }, S),
-            ], S)
-          : Secao("tools", "FERRAMENTAS", [
-              Linha({ key: "t1", label: "Seletor de cores", sub: "Escolha uma cor e copie o código", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { setTela("cores"); } }, S),
-            ], S),
-        h(RN.View, { style: { height: 40 } })
-      );
-    }
-
-    return h(RN.View, { style: S.root }, topo, corpo);
-  }
-
-  // Se algo der errado na tela, mostra o erro em vez de travar o app
-  class Barreira extends React.Component {
-    constructor(p) {
-      super(p);
-      this.state = { erro: null };
-    }
-    static getDerivedStateFromError(e) {
-      return { erro: e };
-    }
-    render() {
-      if (this.state.erro) {
-        return h(RN.Text, { style: { color: "#ed4245", padding: 16 } }, "Erro no Tweet: " + (this.state.erro.message || this.state.erro));
-      }
-      return this.props.children;
-    }
-  }
-
-  // Abertura 1: botão "Tweet" na tela do plugin (Configurações > Plugins > Alphacord > engrenagem)
-  function TweetConfig() {
-    const S = React.useMemo(mkStyles, []);
-    const [aberto, setAberto] = React.useState(false);
-    if (aberto) {
-      return h(RN.View, { style: { flex: 1 } }, h(Barreira, null, h(TweetApp, { onClose: function () { setAberto(false); } })));
-    }
-    return h(
-      RN.ScrollView,
-      { style: S.root },
-      Secao("alpha", "ALPHACORD", [
-        Linha({ key: "tweet", label: "Tweet", sub: "Suas anotações privadas e ferramentas", icone: icone("ic_message_24px", "ic_text_channel"), arrow: true, onPress: function () { setAberto(true); } }, S),
-      ], S)
-    );
-  }
-
-  // Abertura 2: .tweet ou /tweet (janela por cima do chat)
-  function fecharTweet() {
-    flushPaginas();
-    try { findByProps("openAlert", "dismissAlert").dismissAlert(ALERT_KEY); } catch (e) {}
-  }
-  function abrirTweet(ctx) {
-    try {
-      const win = RN.Dimensions.get("window");
-      findByProps("openAlert", "dismissAlert").openAlert(
-        ALERT_KEY,
-        h(
-          RN.View,
-          { style: { width: win.width, height: win.height * 0.85, overflow: "hidden", borderRadius: 12 } },
-          h(Barreira, null, h(TweetApp, { onClose: fecharTweet }))
-        )
-      );
-      return;
-    } catch (e) {}
-    out(ctx, "Não consegui abrir o Tweet por aqui. Abra em Configurações > Plugins > Alphacord (engrenagem).");
+    return orig.apply(MA, args);
   }
 
   // ===== Comandos de servidor: .criar / .deletar / .wiki =====
@@ -1062,7 +525,9 @@
   let fila = Promise.resolve();
 
   function naFila(fn) {
-    fila = fila.then(fn).catch(function () {});
+    fila = fila.then(fn).catch(function (e) {
+      toast("Erro na operação: " + erroTxt(e));
+    });
     return fila;
   }
   function chave(s) {
@@ -1078,13 +543,20 @@
     }
     return res;
   }
+  function limparBloco(raw) {
+    let texto = String(raw || "").trim();
+    const bloco = texto.match(/^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/);
+    if (bloco) texto = bloco[1].trim();
+    return texto;
+  }
+
   function rest() {
     return findByProps("getAPIBaseURL", "get");
   }
   function erroTxt(e) {
     const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
     return e && e.status === 403 ? msg + " (sem permissão)" : msg;
-    }
+  }
   function guildDe(ctx) {
     try {
       const ch = vendetta.metro.findByStoreName("ChannelStore").getChannel(ctx.channelId);
@@ -1149,6 +621,10 @@
       if (!achados.length) return out(ctx, 'Não achei a categoria "' + a.cat + '". Crie antes com `.criar categoria ' + a.cat + "`.");
       pai = achados[0].id;
     }
+    const repetido = canaisDe(gid).some(function (c) {
+      return c.type === a.tipo && chave(c.name) === chave(a.nome) && (c.parent_id || null) === pai;
+    });
+    if (repetido) return out(ctx, 'Já existe um canal chamado "' + a.nome + '" nesse local.');
     try {
       const body = { name: a.nome, type: a.tipo };
       if (pai) body.parent_id = pai;
@@ -1166,6 +642,7 @@
     if (!gid) return out(ctx, "Use isso dentro de um servidor.");
     const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
     if (!nome) return out(ctx, "Use: `.criar categoria Nome`.");
+    if (acharCanal(gid, nome, [4]).length) return out(ctx, 'Já existe uma categoria chamada "' + nome + '".');
     try {
       const r = await rest().post({ url: "/guilds/" + gid + "/channels", body: { name: nome, type: 4 } });
       recentes[gid + "|4|" + chave(r.body.name || nome)] = r.body.id;
@@ -1177,9 +654,9 @@
 
   // permissões dos cargos (números de bit das permissões do Discord)
   function mascara(bits) {
-    let r = BigInt(0);
-    bits.forEach(function (b) { r = r | (BigInt(1) << BigInt(b)); });
-    return r.toString();
+    let r = 0;
+    bits.forEach(function (b) { r += Math.pow(2, b); });
+    return String(r);
   }
   function permissoesDoCargo(num) {
     const membro = [0, 6, 9, 10, 11, 14, 15, 16, 18, 20, 21, 25, 26, 31, 32, 35, 37, 38, 39, 42, 45, 46, 49, 50];
@@ -1215,28 +692,49 @@
   async function doCriarCargos(ctx, raw) {
     const gid = guildDe(ctx);
     if (!gid) return out(ctx, "Use isso dentro de um servidor.");
-    const linhas = String(raw || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    const linhas = limparBloco(raw).split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
     if (!linhas.length) return out(ctx, 'Use: `.criar cargo "Nome" 2 #random` (veja `.wiki "criar cargo"`).');
+    if (linhas.length > 100) return out(ctx, "Limite de 100 cargos por operação.");
+
     const itens = [];
     const erros = [];
+    const vistos = {};
     linhas.forEach(function (l) {
       const c = parseCargo(l);
-      if (c.erro) erros.push(c.erro);
-      else itens.push(c);
+      if (c.erro) { erros.push(c.erro); return; }
+      const k = chave(c.nome);
+      if (vistos[k]) { erros.push('Nome repetido na lista: "' + c.nome + '"'); return; }
+      vistos[k] = true;
+      if (!acharCargo(gid, c.nome).length) itens.push(c);
     });
     if (erros.length) return out(ctx, "❌ Nada foi criado. Corrija:\n" + erros.join("\n"));
-    let feitos = 0;
-    const falhas = [];
-    for (let i = 0; i < itens.length; i++) {
-      try {
-        await criarUmCargo(gid, itens[i]);
-        feitos++;
-      } catch (e) {
-        falhas.push(itens[i].nome + ": " + erroTxt(e));
+    const pulados = linhas.length - itens.length;
+    if (!itens.length) return out(ctx, "Todos os cargos da lista já existem. Nada foi criado.");
+
+    async function executarAgora() {
+      let feitos = 0;
+      const falhas = [];
+      for (let i = 0; i < itens.length; i++) {
+        try {
+          await criarUmCargo(gid, itens[i]);
+          feitos++;
+        } catch (e) {
+          falhas.push(itens[i].nome + ": " + erroTxt(e));
+        }
+        if (i < itens.length - 1) await esperar(650);
       }
-      if (i < itens.length - 1) await new Promise(function (res) { setTimeout(res, 500); });
+      out(ctx, (feitos ? "✅ Cargos criados: " + feitos : "❌ Nenhum cargo criado.") +
+        (pulados ? "\nJá existiam: " + pulados : "") +
+        (falhas.length ? "\n❌ Falharam:\n" + falhas.slice(0, 12).join("\n") : ""));
     }
-    out(ctx, (feitos ? "✅ Cargos criados: " + feitos : "❌ Nenhum cargo criado.") + (falhas.length ? "\n❌ Falharam:\n" + falhas.join("\n") : ""));
+
+    // O comando já está dentro da fila. Não enfileire novamente aqui para evitar deadlock.
+    if (itens.length === 1) return executarAgora();
+    confirmarCriar(
+      "Criar vários cargos",
+      "Serão criados " + itens.length + " cargos." + (pulados ? "\nJá existentes serão pulados: " + pulados : "") + "\nContinuar?",
+      function () { naFila(executarAgora); }
+    );
   }
 
   // ---- deletar (sempre com a telinha de aceitar/cancelar) ----
@@ -1280,9 +778,69 @@
         esquecer(alvo.id);
         out(ctx, "🗑️ Cargo deletado: " + nome);
       } catch (e) {
-        out(ctx, "❌ Não consegui deletar: " + erroTxt(e));
+        out(ctx, "❌ Não consegui deletar o cargo: " + erroTxt(e));
       }
     });
+  }
+
+  async function doDeletarEmMassa(ctx, raw, tipo) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nomes = limparBloco(raw).split("\n").map(function (x) {
+      return tokens(x).map(function (t) { return t.v; }).join(" ").trim();
+    }).filter(Boolean);
+    if (!nomes.length) return out(ctx, "Envie um nome por linha. Exemplo:\n```\nNome 1\nNome 2\n```");
+    if (nomes.length > 100) return out(ctx, "Limite de 100 itens por operação.");
+
+    const tipos = tipo === "categoria" ? [4] : [0, 2, 5, 13, 15];
+    const alvos = [];
+    const problemas = [];
+    const vistos = {};
+    nomes.forEach(function (nome) {
+      const chaveNome = chave(nome);
+      if (vistos[chaveNome]) return;
+      vistos[chaveNome] = true;
+      const encontrados = tipo === "cargo" ? acharCargo(gid, nome) : acharCanal(gid, nome, tipo === "categoria" ? [4] : tipos);
+      if (!encontrados.length) problemas.push('Não encontrado: "' + nome + '"');
+      else if (encontrados.length > 1) problemas.push('Nome ambíguo: "' + nome + '" (' + encontrados.length + ' resultados)');
+      else alvos.push({ id: encontrados[0].id, nome: nome });
+    });
+    if (!alvos.length) return out(ctx, "Nenhum item válido para apagar." + (problemas.length ? "\n" + problemas.join("\n") : ""));
+
+    const aviso = tipo === "categoria"
+      ? "\nOs canais dentro das categorias permanecerão no servidor."
+      : tipo === "canal"
+        ? "\nA exclusão dos canais também remove o histórico deles."
+        : "\nMembros perderão os cargos removidos.";
+    confirmar(
+      "Deletar " + alvos.length + (tipo === "cargo" ? " cargos" : tipo === "categoria" ? " categorias" : " canais"),
+      alvos.map(function (x) { return "• " + x.nome; }).join("\n") + aviso +
+        (problemas.length ? "\n\nItens ignorados:\n" + problemas.slice(0, 8).join("\n") : "") + "\n\nTem certeza?",
+      "Deletar",
+      function () {
+        naFila(async function () {
+          let removidos = 0;
+          const falhas = [];
+          for (let i = 0; i < alvos.length; i++) {
+            const alvo = alvos[i];
+            try {
+              const url = tipo === "cargo"
+                ? "/guilds/" + gid + "/roles/" + alvo.id
+                : "/channels/" + alvo.id;
+              await rest().del({ url: url });
+              esquecer(alvo.id);
+              removidos++;
+            } catch (e) {
+              falhas.push(alvo.nome + ": " + erroTxt(e));
+            }
+            if (i < alvos.length - 1) await esperar(650);
+          }
+          out(ctx, "🗑️ Removidos: " + removidos + "/" + alvos.length +
+            (problemas.length ? "\nIgnorados: " + problemas.length : "") +
+            (falhas.length ? "\nFalhas:\n" + falhas.slice(0, 10).join("\n") : ""));
+        });
+      }
+    );
   }
 
   // ---- textos do .wiki ----
@@ -1396,7 +954,7 @@
 
   // ---- .criar tudo: monta cargos, categorias e canais a partir de um JSON ----
   function esperar(ms) {
-        return new Promise(function (res) { setTimeout(res, ms); });
+    return new Promise(function (res) { setTimeout(res, ms); });
   }
   function listaNomes(v) {
     return Array.isArray(v) ? v.map(String) : [];
@@ -1417,6 +975,14 @@
     if (!o.nome) { erros.push(ref + ": falta o nome do canal"); return null; }
     const tipo = o.tipo === undefined || o.tipo === null ? 0 : TIPOS[chave(o.tipo)];
     if (tipo === undefined) { erros.push(ref + ' ("' + o.nome + '"): tipo inválido (use texto, voz ou topicos)'); return null; }
+    if (o.privado_para !== undefined && !Array.isArray(o.privado_para)) {
+      erros.push(ref + ': "privado_para" precisa ser uma lista [ ]');
+      return null;
+    }
+    if (o.escrevem !== undefined && !Array.isArray(o.escrevem)) {
+      erros.push(ref + ': "escrevem" precisa ser uma lista [ ]');
+      return null;
+    }
     return {
       nome: String(o.nome),
       tipo: tipo,
@@ -1434,6 +1000,12 @@
       erros.push('O JSON precisa começar com { e ter "cargos", "categorias" e/ou "canais".');
       return plano;
     }
+    ["cargos", "categorias", "canais"].forEach(function (campo) {
+      if (dados[campo] !== undefined && !Array.isArray(dados[campo])) {
+        erros.push('O campo "' + campo + '" precisa ser uma lista [ ].');
+      }
+    });
+    if (erros.length) return plano;
     (dados.cargos || []).forEach(function (c, i) {
       const o = Array.isArray(c) ? { nome: c[0], numero: c[1], cor: c[2] } : c || {};
       const ref = "cargo " + (i + 1) + (o.nome ? ' ("' + o.nome + '")' : "");
@@ -1446,7 +1018,18 @@
     });
     (dados.categorias || []).forEach(function (cat, i) {
       const ref = "categoria " + (i + 1);
-      if (!cat || !cat.nome) return erros.push(ref + ": falta o nome");
+      if (!cat || typeof cat !== "object" || Array.isArray(cat) || !cat.nome) {
+        erros.push(ref + ": informe um objeto com o campo nome");
+        return;
+      }
+      if (cat.canais !== undefined && !Array.isArray(cat.canais)) {
+        erros.push(ref + ': o campo "canais" precisa ser uma lista [ ]');
+        return;
+      }
+      if (cat.privado_para !== undefined && !Array.isArray(cat.privado_para)) {
+        erros.push(ref + ': o campo "privado_para" precisa ser uma lista [ ]');
+        return;
+      }
       const c = { nome: String(cat.nome), priv: listaNomes(cat.privado_para), canais: [] };
       (cat.canais || []).forEach(function (x, j) {
         const k = normCanal(x, ref + ' ("' + c.nome + '") canal ' + (j + 1), erros);
@@ -1599,9 +1182,7 @@
   async function doCriarTudo(ctx, raw) {
     const gid = guildDe(ctx);
     if (!gid) return out(ctx, "Use isso dentro de um servidor.");
-    let txt = String(raw || "").trim();
-    const f = txt.match(/^```[a-zA-Z]*\n?([\s\S]*?)\n?```$/);
-    if (f) txt = f[1].trim();
+    let txt = limparBloco(raw);
     txt = txt.replace(/[“”]/g, '"');
     if (!txt) return out(ctx, 'Cole o JSON depois do comando, dentro de um bloco de código. Veja `.wiki "criar tudo"`.');
     let dados;
@@ -1658,7 +1239,6 @@
   const life = {
     onLoad: function () {
       ready = Promise.all([loadDb(), loadModo()]).catch(function () {});
-      paginasReady = loadPaginas().catch(function () {});
 
       CMDS.forEach(function (c) {
         if (c.noSlash) return;
@@ -1700,10 +1280,8 @@
       if (unpatchSend) unpatchSend();
       unpatchSend = null;
       pending = null;
-      flushPaginas();
       // os dados salvos NÃO são apagados ao descarregar
     },
-    settings: TweetConfig,
   };
 
   return Object.assign({ default: life }, life);
