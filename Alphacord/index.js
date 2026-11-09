@@ -165,7 +165,7 @@
 
   function out(c, text) {
     chunk(text).forEach(function (p) {
-      if (c.viaPrefix && MA) sendReal(c.channelId, p);
+      if (c.viaPrefix && !c.local && MA) sendReal(c.channelId, p);
       else botMsg(c.channelId, p);
     });
   }
@@ -290,10 +290,12 @@
     {
       name: "help",
       aliases: ["help", "ajuda"],
+      local: true,
       desc: "Mostra todos os comandos do Alphacord",
       run: function (ctx) {
         const linhas = CMDS.map(function (c) {
-          return "• `/" + c.name + "` ou `." + c.aliases.join("` / `.") + "`" + (c.usage ? " " + c.usage : "") + " — " + c.desc;
+          const pre = "`." + c.aliases.join("` / `.") + "`";
+          return "• " + (c.noSlash ? pre : "`/" + c.name + "` ou " + pre) + (c.usage ? " " + c.usage : "") + " — " + c.desc;
         });
         out(ctx, ["**Alphacord — comandos**"].concat(linhas).join("\n") + "\n" + RODAPE);
       },
@@ -371,11 +373,50 @@
       },
     },
     {
-      name: "paginas",
-      aliases: ["paginas", "abas"],
-      desc: "Abre a Aba Páginas (suas anotações privadas)",
+      name: "tweet",
+      aliases: ["tweet", "paginas", "anotacoes"],
+      desc: "Abre o Tweet (suas anotações privadas e ferramentas)",
       run: function (ctx) {
-        abrirPaginas(ctx);
+        abrirTweet(ctx);
+      },
+    },
+    cmdServidor(["criar canal"], "Cria um canal de texto, voz ou tópicos", '"nome" texto em Categoria', wikiCanal(), doCriarCanal),
+    cmdServidor(
+      ["deletar canal"], "Deleta um canal (pede confirmação)", '"nome"',
+      '**.deletar canal**\nUse: `.deletar canal "nome-do-canal"`\nVocê confirma numa telinha antes de apagar.',
+      function (ctx, raw) { return doDeletarCanal(ctx, raw, [0, 2, 5, 13, 15], "canal"); }
+    ),
+    cmdServidor(
+      ["criar categoria"], "Cria uma categoria", "Nome",
+      '**.criar categoria**\nUse: `.criar categoria Comunidade`\nDepois crie canais nela com `.criar canal "chat-geral" texto em Comunidade`.',
+      doCriarCategoria
+    ),
+    cmdServidor(
+      ["deletar categoria"], "Deleta uma categoria (pede confirmação)", "Nome",
+      '**.deletar categoria**\nUse: `.deletar categoria Comunidade`\nOs canais dentro dela não são apagados. Você confirma numa telinha antes.',
+      function (ctx, raw) { return doDeletarCanal(ctx, raw, [4], "categoria"); }
+    ),
+    cmdServidor(["criar cargo"], "Cria um cargo", '"Nome" 2 #random', wikiCargo(), doCriarCargos),
+    cmdServidor(["criar cargos"], "Cria vários cargos de uma vez (bloco de código)", "uma linha por cargo", wikiCargos(), doCriarCargos),
+    cmdServidor(
+      ["deletar cargo"], "Deleta um cargo (pede confirmação)", '"Nome"',
+      '**.deletar cargo**\nUse: `.deletar cargo "Nome do cargo"`\nVocê confirma numa telinha antes de apagar.',
+      doDeletarCargo
+    ),
+    {
+      name: "wiki",
+      aliases: ["wiki"],
+      desc: "Mostra exatamente como usar um comando",
+      usage: '"criar canal"',
+      local: true,
+      raw: true,
+      options: [{ name: "comando", desc: "Nome do comando, ex.: criar canal", required: true }],
+      run: function (ctx, args) {
+        const q = chave(String(args.raw || args.comando || "")).replace(/["“”]/g, "").replace(/^[./]/, "").replace(/\s+/g, " ").trim();
+        if (!q) return out(ctx, 'Use: `.wiki "criar canal"`. Veja os nomes com `.help`.');
+        const c = CMDS.find(function (x) { return x.name === q || x.aliases.indexOf(q) >= 0; });
+        if (!c) return out(ctx, 'Não achei o comando "' + q + '". Use `.help` para ver a lista.');
+        out(ctx, c.wiki || "Para usar: `." + c.aliases[0] + "`" + (c.usage ? " " + c.usage : "") + "\n" + c.desc);
       },
     },
   ];
@@ -420,11 +461,10 @@
         return Promise.resolve();
       }
 
-      const m = text.match(/^\.([a-zA-Z]+)(?:\s+([\s\S]*))?$/);
-      const cmd = m && CMDS.find(function (c) { return c.aliases.indexOf(m[1].toLowerCase()) >= 0; });
-      if (cmd) {
+      const hit = matchPrefix(text);
+      if (hit) {
         pending = null;
-        run(cmd, { channelId: channelId, viaPrefix: true }, parseArgs(m[2]));
+        run(hit.cmd, { channelId: channelId, viaPrefix: true, local: !!hit.cmd.local }, hit.cmd.raw ? { raw: hit.rest } : parseArgs(hit.rest));
         return Promise.resolve();
       }
 
@@ -578,48 +618,216 @@
       migAtual: { color: txt, fontSize: 15, fontWeight: "bold" },
       sep: { color: mut, fontSize: 15 },
       sair: { color: "#ed4245", fontSize: 15, fontWeight: "bold", marginLeft: 12 },
+      secao: { color: mut, fontSize: 12, fontWeight: "bold", marginTop: 16, marginBottom: 6, marginHorizontal: 16 },
       item: { padding: 14, marginHorizontal: 12, marginTop: 8, borderRadius: 8, backgroundColor: bg2 },
       itemTxt: { color: txt, fontSize: 16 },
-      vazio: { color: mut, textAlign: "center", marginTop: 40 },
-      mais: { position: "absolute", right: 20, bottom: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: acc, alignItems: "center", justifyContent: "center" },
-      maisTxt: { color: "#ffffff", fontSize: 30 },
+      sub: { color: mut, fontSize: 13 },
+      vazio: { color: mut, textAlign: "center", marginTop: 24, marginBottom: 8 },
       corpo: { padding: 16 },
       texto: { color: txt, fontSize: 16, lineHeight: 24 },
       codigo: { color: txt, backgroundColor: bg2, fontFamily: "monospace", fontSize: 15 },
-      input: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, marginTop: 8 },
-      barra: { flexDirection: "row", justifyContent: "flex-end", padding: 8 },
-      btn: { color: acc, fontSize: 15, fontWeight: "bold", padding: 8 },
-      fundo: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
-      menu: { backgroundColor: bg2, padding: 12, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
-      menuItem: { padding: 14 },
+      input: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, minHeight: 160, textAlignVertical: "top" },
+      campo: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, marginHorizontal: 16, marginTop: 8 },
+      amostra: { height: 90, marginHorizontal: 16, marginTop: 16, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+      amostraTxt: { fontSize: 18, fontWeight: "bold" },
+      grade: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 16 },
     });
   }
 
-  // Texto da página: o que estiver entre `crases` copia ao tocar
+  // ----- peças de interface nativas do Discord (Forms) -----
+  function formsDoDiscord() {
+    return (vendetta.ui && vendetta.ui.components && vendetta.ui.components.Forms) || {};
+  }
+  function icone() {
+    for (let i = 0; i < arguments.length; i++) {
+      try {
+        const id = vendetta.ui.assets.getAssetIDByName(arguments[i]);
+        if (id) return id;
+      } catch (e) {}
+    }
+    return undefined;
+  }
+  function Linha(p, S) {
+    const F = formsDoDiscord();
+    const Row = F.FormRow;
+    if (Row) {
+      return h(Row, {
+        key: p.key,
+        label: p.label,
+        subLabel: p.sub,
+        leading: p.icone && Row.Icon ? h(Row.Icon, { source: p.icone }) : undefined,
+        trailing: p.arrow && Row.Arrow ? h(Row.Arrow, null) : undefined,
+        onPress: p.onPress,
+      });
+    }
+    return h(
+      RN.TouchableOpacity,
+      { key: p.key, style: S.item, onPress: p.onPress },
+      h(RN.Text, { style: S.itemTxt }, p.label),
+      p.sub ? h(RN.Text, { style: S.sub }, p.sub) : null
+    );
+  }
+  function Secao(key, titulo, filhosEl, S) {
+    const F = formsDoDiscord();
+    if (F.FormSection) return h(F.FormSection, { key: key, title: titulo }, filhosEl);
+    return h(RN.View, { key: key }, h(RN.Text, { style: S.secao }, titulo), filhosEl);
+  }
+
+  // ----- telinhas nativas de pergunta e de aceitar/cancelar -----
+  function pedirNome(titulo, inicial, botao, cb) {
+    vendetta.ui.alerts.showInputAlert({
+      title: titulo,
+      initialValue: inicial || "",
+      placeholder: "Nome",
+      confirmText: botao,
+      cancelText: "Cancelar",
+      onConfirm: function (v) {
+        const nome = String(v || "").trim();
+        if (!nome) return toast("Escreva um nome");
+        cb(nome);
+      },
+    });
+  }
+  function confirmar(titulo, texto, botao, fn) {
+    vendetta.ui.alerts.showConfirmationAlert({
+      title: titulo,
+      content: texto,
+      confirmText: botao,
+      cancelText: "Cancelar",
+      confirmColor: "red",
+      onConfirm: fn,
+    });
+  }
+
+  // ----- cores -----
+  function hexValido(s) {
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s);
+  }
+  function hsvHex(hh, s, v) {
+    const c = v * s;
+    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+    const m = v - c;
+    let r = 0, g = 0, b = 0;
+    if (hh < 60) { r = c; g = x; }
+    else if (hh < 120) { r = x; g = c; }
+    else if (hh < 180) { g = c; b = x; }
+    else if (hh < 240) { g = x; b = c; }
+    else if (hh < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    return "#" + [r, g, b].map(function (k) {
+      return ("0" + Math.round((k + m) * 255).toString(16)).slice(-2);
+    }).join("");
+  }
+  function contraste(hex) {
+    const n = parseInt(hex.slice(1, 7), 16);
+    const lum = ((n >> 16) & 255) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114;
+    return lum > 150 ? "#000000" : "#ffffff";
+  }
+  function corInt(s) {
+    if (!s) return 0;
+    if (/^#?random$/i.test(s)) return Math.floor(Math.random() * 0xfffffe) + 1;
+    let m = String(s).match(/^#?([0-9a-f]{6})$/i);
+    if (m) return parseInt(m[1], 16);
+    m = String(s).match(/^#([0-9a-f]{3})$/i);
+    if (m) return parseInt(m[1].split("").map(function (d) { return d + d; }).join(""), 16);
+    return null;
+  }
+
+  const PRONTAS = [
+    ["Vermelho", "#ed4245"], ["Laranja", "#f57c00"], ["Amarelo", "#fee75c"], ["Verde", "#3ba55d"], ["Azul", "#3498db"],
+    ["Roxo", "#9b59b6"], ["Rosa", "#ff69b4"], ["Preto", "#000000"], ["Cinza", "#808080"], ["Branco", "#ffffff"],
+  ];
+
+  function CoresTela(props) {
+    const S = props.S;
+    const [matiz, setMatiz] = React.useState(130);
+    const [cor, setCor] = React.useState("#3ba55d");
+    const [campo, setCampo] = React.useState("#3BA55D");
+    const largura = RN.Dimensions.get("window").width - 32;
+    const grade = React.useMemo(function () {
+      const cel = [];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) cel.push(hsvHex(matiz, c / 7, 1 - r * 0.12));
+      return cel;
+    }, [matiz]);
+
+    function escolher(hex) {
+      setCor(hex);
+      setCampo(hex.toUpperCase());
+    }
+
+    return h(
+      RN.ScrollView,
+      { style: { flex: 1 } },
+      h(RN.View, { style: [S.amostra, { backgroundColor: cor }] }, h(RN.Text, { style: [S.amostraTxt, { color: contraste(cor) }] }, cor.toUpperCase())),
+      Secao("matiz", "ESCOLHA O TOM", h(RN.View, { style: S.grade }, Array.apply(null, Array(16)).map(function (_, i) {
+        const hh = i * 22.5;
+        return h(RN.TouchableOpacity, {
+          key: i,
+          onPress: function () { setMatiz(hh); },
+          style: { width: largura / 16, height: 34, backgroundColor: hsvHex(hh, 1, 1) },
+        });
+      })), S),
+      Secao("tons", "CLARO, ESCURO E FORÇA", h(RN.View, { style: S.grade }, grade.map(function (hex, i) {
+        return h(RN.TouchableOpacity, {
+          key: i,
+          onPress: function () { escolher(hex); },
+          style: { width: largura / 8, height: 34, backgroundColor: hex },
+        });
+      })), S),
+      Secao("prontas", "CORES PRONTAS", h(RN.View, { style: S.grade }, PRONTAS.map(function (p) {
+        return h(RN.TouchableOpacity, {
+          key: p[0],
+          onPress: function () { escolher(p[1]); },
+          style: { width: 40, height: 40, borderRadius: 20, margin: 4, backgroundColor: p[1], borderWidth: 1, borderColor: "#888888" },
+        });
+      })), S),
+      Secao("codigo", "CÓDIGO (se você já tiver um)", h(RN.TextInput, {
+        style: S.campo,
+        value: campo,
+        autoCapitalize: "characters",
+        maxLength: 7,
+        onChangeText: function (t) {
+          setCampo(t);
+          if (/^#[0-9a-fA-F]{6}$/.test(t)) setCor(t.toLowerCase());
+        },
+      }), S),
+      Secao("acoes", "USAR A COR", [
+        Linha({ key: "c1", label: "Copiar o código da cor", sub: cor.toUpperCase(), icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar(cor.toUpperCase()); } }, S),
+        Linha({ key: "c2", label: "Copiar como texto colorido", sub: "[texto](" + cor + ")", icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar("[texto](" + cor + ")"); } }, S),
+        Linha({ key: "c3", label: "Cor aleatória", icone: icone("ic_refresh", "ic_sync_24px"), onPress: function () { escolher(hsvHex(Math.random() * 359, 0.5 + Math.random() * 0.5, 0.6 + Math.random() * 0.4)); } }, S),
+      ], S),
+      h(RN.View, { style: { height: 40 } })
+    );
+  }
+
+  // Texto da página: `crases` copiam ao tocar e [palavra](#cor) colore
   function renderTexto(txt, S) {
-    if (!txt) return h(RN.Text, { style: S.vazio }, "Página vazia. Toque em Editar para escrever.");
-    const partes = txt.split(/(```[\s\S]*?```|`[^`\n]+`)/);
+    if (!txt) return h(RN.Text, { style: S.vazio }, "Página vazia. Use Editar texto para escrever.");
+    const partes = txt.split(/(```[\s\S]*?```|`[^`\n]+`|\[[^\]\n]+\]\(#[0-9a-fA-F]{3,8}\))/);
     return h(
       RN.Text,
       { style: S.texto },
       partes.map(function (p, i) {
         const bloco = p.length > 6 && p.indexOf("```") === 0;
-        const inline = !bloco && p.length > 2 && p.charAt(0) === "`" && p.charAt(p.length - 1) === "`";
-        if (!bloco && !inline) return p;
-        const cod = bloco ? p.slice(3, -3).replace(/^\n/, "") : p.slice(1, -1);
-        return h(RN.Text, { key: i, style: S.codigo, onPress: function () { copiar(cod); } }, " " + cod + " ");
+        if (bloco || (p.length > 2 && p.charAt(0) === "`" && p.charAt(p.length - 1) === "`")) {
+          const cod = bloco ? p.slice(3, -3).replace(/^\n/, "") : p.slice(1, -1);
+          return h(RN.Text, { key: i, style: S.codigo, onPress: function () { copiar(cod); } }, " " + cod + " ");
+        }
+        const cor = p.match(/^\[([^\]\n]+)\]\((#[0-9a-fA-F]{3,8})\)$/);
+        if (cor && hexValido(cor[2])) return h(RN.Text, { key: i, style: { color: cor[2] } }, cor[1]);
+        return p;
       })
     );
   }
 
-  function PaginasApp(props) {
+  // ----- tela principal do Tweet -----
+  function TweetApp(props) {
     const S = React.useMemo(mkStyles, []);
     const force = React.useReducer(function (x) { return x + 1; }, 0)[1];
     const [caminho, setCaminho] = React.useState([]);
     const [pagina, setPagina] = React.useState(null);
     const [editando, setEditando] = React.useState(false);
-    const [menu, setMenu] = React.useState(null);
-    const [form, setForm] = React.useState(null);
+    const [tela, setTela] = React.useState("tweet");
     const [carregado, setCarregado] = React.useState(false);
 
     React.useEffect(function () {
@@ -628,15 +836,18 @@
     }, []);
 
     const atual = caminho.length ? caminho[caminho.length - 1] : null;
+    const nodeAtual = atual ? achar(atual) : null;
     const nodePagina = pagina ? achar(pagina) : null;
 
     function irPara(n) {
+      setTela("tweet");
       setPagina(null);
       setEditando(false);
       setCaminho(caminho.slice(0, n));
     }
     function voltar() {
-      if (pagina) { setPagina(null); setEditando(false); }
+      if (tela === "cores") setTela("tweet");
+      else if (pagina) { setPagina(null); setEditando(false); }
       else if (caminho.length) setCaminho(caminho.slice(0, -1));
       else props.onClose();
     }
@@ -645,62 +856,48 @@
       props.onClose();
     }
 
-    function confirmarForm() {
-      const nome = (form.nome || "").trim();
-      if (!nome) return toast("Escreva um nome");
-      if (form.modo === "novo") {
+    function adicionar(tipo) {
+      pedirNome(tipo === "pagina" ? "Nome da página" : "Nome do caminho", "", "Criar", function (nome) {
         const agora = Date.now();
-        const no = { uid: novoId(), pai: atual, tipo: form.tipo, nome: nome, conteudo: "", criadoEm: agora, editadoEm: agora };
+        const no = { uid: novoId(), pai: atual, tipo: tipo, nome: nome, conteudo: "", criadoEm: agora, editadoEm: agora };
         paginas.nodes.push(no);
-        if (form.tipo === "pagina") { setPagina(no.uid); setEditando(true); }
-      } else {
-        const n = achar(form.id);
-        if (n) { n.nome = nome; n.editadoEm = Date.now(); }
-      }
-      savePaginas();
-      setForm(null);
-      force();
+        savePaginas();
+        if (tipo === "pagina") { setPagina(no.uid); setEditando(true); }
+        force();
+      });
     }
-
+    function renomear(n) {
+      pedirNome("Novo nome", n.nome, "Salvar", function (nome) {
+        n.nome = nome;
+        n.editadoEm = Date.now();
+        savePaginas();
+        force();
+      });
+    }
     function excluir(n) {
       const ids = {};
       [n].concat(descendentes(n.uid)).forEach(function (x) { ids[x.uid] = true; });
       paginas.nodes = paginas.nodes.filter(function (x) { return !ids[x.uid]; });
       if (pagina === n.uid) { setPagina(null); setEditando(false); }
+      if (atual === n.uid) setCaminho(caminho.slice(0, -1));
       savePaginas();
       force();
     }
     function pedirExclusao(n) {
-      const msg = n.tipo === "caminho"
-        ? 'Excluir o caminho "' + n.nome + '" e tudo dentro dele (' + descendentes(n.uid).length + " itens)?"
+      const txt = n.tipo === "caminho"
+        ? 'Excluir o caminho "' + n.nome + '" e tudo que está dentro dele (' + descendentes(n.uid).length + " itens)?"
         : 'Excluir a página "' + n.nome + '"?';
-      RN.Alert.alert("Excluir", msg, [
-        { text: "Cancelar", style: "cancel" },
-        { text: "Excluir", style: "destructive", onPress: function () { excluir(n); } },
-      ]);
+      confirmar("Excluir", txt, "Excluir", function () { excluir(n); });
     }
 
-    function sheet(opcoes) {
-      return h(
-        RN.TouchableOpacity,
-        { activeOpacity: 1, style: S.fundo, onPress: function () { setMenu(null); } },
-        h(
-          RN.View,
-          { style: S.menu },
-          opcoes.map(function (o, i) {
-            return h(RN.TouchableOpacity, { key: i, style: S.menuItem, onPress: o[1] }, h(RN.Text, { style: S.itemTxt }, o[0]));
-          })
-        )
-      );
-    }
-
-    // trilha: Aba Páginas | Testes | Testes Plugins | 1
-    const migas = [{ label: "Aba Páginas", fn: function () { irPara(0); } }];
+    // trilha: Tweet | Testes | Testes Plugins | 1
+    const migas = [{ label: "Tweet", fn: function () { irPara(0); } }];
     caminho.forEach(function (id, i) {
       const n = achar(id);
       migas.push({ label: n ? n.nome : "?", fn: function () { irPara(i + 1); } });
     });
-    if (nodePagina) migas.push({ label: nodePagina.nome });
+    if (tela === "cores") migas.push({ label: "Cores" });
+    else if (nodePagina) migas.push({ label: nodePagina.nome });
 
     const topo = h(
       RN.View,
@@ -725,25 +922,27 @@
     let corpo;
     if (!carregado) {
       corpo = h(RN.Text, { style: S.vazio }, "Carregando...");
+    } else if (tela === "cores") {
+      corpo = h(CoresTela, { S: S });
     } else if (nodePagina) {
       corpo = h(
-        RN.View,
-        { style: { flex: 1 } },
+        RN.ScrollView,
+        { style: { flex: 1 }, keyboardShouldPersistTaps: "handled" },
+        Secao("pg", "PÁGINA", [
+          Linha({ key: "ed", label: editando ? "Concluir edição" : "Editar texto", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { setEditando(!editando); flushPaginas(); } }, S),
+          editando ? Linha({ key: "cor", label: "Abrir seletor de cores", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { flushPaginas(); setTela("cores"); } }, S) : null,
+          Linha({ key: "rn", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodePagina); } }, S),
+          Linha({ key: "ex", label: "Excluir página", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodePagina); } }, S),
+        ], S),
         h(
           RN.View,
-          { style: S.barra },
-          h(RN.TouchableOpacity, { onPress: function () { setEditando(!editando); flushPaginas(); } }, h(RN.Text, { style: S.btn }, editando ? "Concluir" : "Editar")),
-          h(RN.TouchableOpacity, { onPress: function () { setMenu({ id: nodePagina.uid }); } }, h(RN.Text, { style: S.btn }, "Mais"))
-        ),
-        editando
-          ? h(
-              RN.ScrollView,
-              { style: S.corpo, keyboardShouldPersistTaps: "handled" },
-              h(RN.TextInput, {
+          { style: S.corpo },
+          editando
+            ? h(RN.TextInput, {
                 style: S.input,
                 multiline: true,
                 defaultValue: nodePagina.conteudo || "",
-                placeholder: "Escreva aqui. Use `crases` para texto que copia ao tocar.",
+                placeholder: "Escreva aqui. `crases` copiam ao tocar e [palavra](#cor) colore o texto.",
                 placeholderTextColor: "#888888",
                 onChangeText: function (t) {
                   nodePagina.conteudo = t;
@@ -751,80 +950,44 @@
                   savePaginasSoon();
                 },
               })
-            )
-          : h(RN.ScrollView, { style: S.corpo }, renderTexto(nodePagina.conteudo || "", S))
+            : renderTexto(nodePagina.conteudo || "", S)
+        ),
+        h(RN.View, { style: { height: 40 } })
       );
     } else {
       const lista = filhos(atual);
       corpo = h(
         RN.ScrollView,
         { style: { flex: 1 } },
-        lista.length
+        Secao("add", "ADICIONAR", [
+          Linha({ key: "ap", label: "Adicionar página", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("pagina"); } }, S),
+          Linha({ key: "ac", label: "Adicionar caminho", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("caminho"); } }, S),
+        ], S),
+        Secao("itens", nodeAtual ? nodeAtual.nome.toUpperCase() : "TWEET", lista.length
           ? lista.map(function (n) {
-              return h(
-                RN.TouchableOpacity,
-                {
-                  key: n.uid,
-                  style: S.item,
-                  onPress: function () { if (n.tipo === "caminho") setCaminho(caminho.concat(n.uid)); else setPagina(n.uid); },
-                  onLongPress: function () { setMenu({ id: n.uid }); },
-                },
-                h(RN.Text, { style: S.itemTxt }, n.tipo === "caminho" ? "[ " + n.nome + " ]" : "> " + n.nome)
-              );
+              return Linha({
+                key: n.uid,
+                label: n.nome,
+                sub: n.tipo === "caminho" ? "Caminho" : "Página",
+                icone: n.tipo === "caminho" ? icone("ic_category", "ic_folder") : icone("ic_message_24px", "ic_text_channel"),
+                arrow: true,
+                onPress: function () { if (n.tipo === "caminho") setCaminho(caminho.concat(n.uid)); else setPagina(n.uid); },
+              }, S);
             })
-          : h(RN.Text, { style: S.vazio }, "Vazio por aqui. Toque no + para adicionar."),
-        h(RN.View, { style: { height: 100 } })
+          : h(RN.Text, { key: "v", style: S.vazio }, "Vazio por aqui. Use Adicionar acima."), S),
+        nodeAtual
+          ? Secao("este", "ESTE CAMINHO", [
+              Linha({ key: "r1", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodeAtual); } }, S),
+              Linha({ key: "r2", label: "Excluir caminho", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodeAtual); } }, S),
+            ], S)
+          : Secao("tools", "FERRAMENTAS", [
+              Linha({ key: "t1", label: "Seletor de cores", sub: "Escolha uma cor e copie o código", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { setTela("cores"); } }, S),
+            ], S),
+        h(RN.View, { style: { height: 40 } })
       );
     }
 
-    let overlay = null;
-    if (form) {
-      overlay = h(
-        RN.View,
-        { style: S.fundo },
-        h(
-          RN.View,
-          { style: S.menu },
-          h(RN.Text, { style: S.itemTxt }, form.modo === "novo" ? (form.tipo === "pagina" ? "Nome da página" : "Nome do caminho") : "Novo nome"),
-          h(RN.TextInput, {
-            style: S.input,
-            autoFocus: true,
-            defaultValue: form.nome,
-            onChangeText: function (t) { setForm(Object.assign({}, form, { nome: t })); },
-          }),
-          h(
-            RN.View,
-            { style: S.barra },
-            h(RN.TouchableOpacity, { onPress: function () { setForm(null); } }, h(RN.Text, { style: S.btn }, "Cancelar")),
-            h(RN.TouchableOpacity, { onPress: confirmarForm }, h(RN.Text, { style: S.btn }, "OK"))
-          )
-        )
-      );
-    } else if (menu === "mais") {
-      overlay = sheet([
-        ["Adicionar página", function () { setMenu(null); setForm({ modo: "novo", tipo: "pagina", nome: "" }); }],
-        ["Adicionar caminho", function () { setMenu(null); setForm({ modo: "novo", tipo: "caminho", nome: "" }); }],
-      ]);
-    } else if (menu && menu.id) {
-      const n = achar(menu.id);
-      if (n) {
-        overlay = sheet([
-          ["Renomear", function () { setMenu(null); setForm({ modo: "renomear", id: n.uid, nome: n.nome }); }],
-          ["Excluir", function () { setMenu(null); pedirExclusao(n); }],
-        ]);
-      }
-    }
-
-    return h(
-      RN.View,
-      { style: S.root },
-      topo,
-      corpo,
-      carregado && !nodePagina
-        ? h(RN.TouchableOpacity, { style: S.mais, onPress: function () { setMenu("mais"); } }, h(RN.Text, { style: S.maisTxt }, "+"))
-        : null,
-      overlay
-    );
+    return h(RN.View, { style: S.root }, topo, corpo);
   }
 
   // Se algo der errado na tela, mostra o erro em vez de travar o app
@@ -838,29 +1001,34 @@
     }
     render() {
       if (this.state.erro) {
-        return h(RN.Text, { style: { color: "#ed4245", padding: 16 } }, "Erro na Aba Páginas: " + (this.state.erro.message || this.state.erro));
+        return h(RN.Text, { style: { color: "#ed4245", padding: 16 } }, "Erro no Tweet: " + (this.state.erro.message || this.state.erro));
       }
       return this.props.children;
     }
   }
 
-  // Abertura 1: tela do plugin (Configurações > Plugins > Alphacord > engrenagem)
-  function PaginasConfig() {
-    let nav = null;
-    try { nav = vendetta.metro.common.NavigationNative.useNavigation(); } catch (e) {}
+  // Abertura 1: botão "Tweet" na tela do plugin (Configurações > Plugins > Alphacord > engrenagem)
+  function TweetConfig() {
+    const S = React.useMemo(mkStyles, []);
+    const [aberto, setAberto] = React.useState(false);
+    if (aberto) {
+      return h(RN.View, { style: { flex: 1 } }, h(Barreira, null, h(TweetApp, { onClose: function () { setAberto(false); } })));
+    }
     return h(
-      RN.View,
-      { style: { flex: 1 } },
-      h(Barreira, null, h(PaginasApp, { onClose: function () { try { nav.goBack(); } catch (e) {} } }))
+      RN.ScrollView,
+      { style: S.root },
+      Secao("alpha", "ALPHACORD", [
+        Linha({ key: "tweet", label: "Tweet", sub: "Suas anotações privadas e ferramentas", icone: icone("ic_message_24px", "ic_text_channel"), arrow: true, onPress: function () { setAberto(true); } }, S),
+      ], S)
     );
   }
 
-  // Abertura 2: .paginas ou /paginas (janela por cima do chat)
-  function fecharPaginas() {
+  // Abertura 2: .tweet ou /tweet (janela por cima do chat)
+  function fecharTweet() {
     flushPaginas();
     try { findByProps("openAlert", "dismissAlert").dismissAlert(ALERT_KEY); } catch (e) {}
   }
-  function abrirPaginas(ctx) {
+  function abrirTweet(ctx) {
     try {
       const win = RN.Dimensions.get("window");
       findByProps("openAlert", "dismissAlert").openAlert(
@@ -868,12 +1036,330 @@
         h(
           RN.View,
           { style: { width: win.width, height: win.height * 0.85, overflow: "hidden", borderRadius: 12 } },
-          h(Barreira, null, h(PaginasApp, { onClose: fecharPaginas }))
+          h(Barreira, null, h(TweetApp, { onClose: fecharTweet }))
         )
       );
       return;
     } catch (e) {}
-    out(ctx, "Não consegui abrir a aba por aqui. Abra em Configurações > Plugins > Alphacord (engrenagem).");
+    out(ctx, "Não consegui abrir o Tweet por aqui. Abra em Configurações > Plugins > Alphacord (engrenagem).");
+  }
+
+  // ===== Comandos de servidor: .criar / .deletar / .wiki =====
+  const TIPOS = { texto: 0, voz: 2, topicos: 15, "tópicos": 15, topico: 15, "tópico": 15, forum: 15, "fórum": 15 };
+  const recentes = {};
+  let fila = Promise.resolve();
+
+  function naFila(fn) {
+    fila = fila.then(fn).catch(function () {});
+    return fila;
+  }
+  function chave(s) {
+    return String(s).trim().toLowerCase();
+  }
+  function tokens(s) {
+    const res = [];
+    const re = /"([^"]*)"|“([^”]*)”|(\S+)/g;
+    let m;
+    while ((m = re.exec(s || ""))) {
+      const q = m[1] !== undefined || m[2] !== undefined;
+      res.push({ q: q, v: m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3] });
+    }
+    return res;
+  }
+  function rest() {
+    return findByProps("getAPIBaseURL", "get");
+  }
+  function erroTxt(e) {
+    const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
+    return e && e.status === 403 ? msg + " (sem permissão)" : msg;
+  }
+  function guildDe(ctx) {
+    try {
+      const ch = vendetta.metro.findByStoreName("ChannelStore").getChannel(ctx.channelId);
+      return ch && ch.guild_id ? ch.guild_id : null;
+    } catch (e) {
+      return null;
+    }
+  }
+  function canaisDe(gid) {
+    try { return Object.values(vendetta.metro.findByStoreName("ChannelStore").getMutableGuildChannelsForGuild(gid)); } catch (e) { return []; }
+  }
+  function cargosDe(gid) {
+    try { return Object.values(vendetta.metro.findByStoreName("GuildStore").getRoles(gid)); } catch (e) { return []; }
+  }
+  function esquecer(id) {
+    Object.keys(recentes).forEach(function (k) { if (recentes[k] === id) delete recentes[k]; });
+  }
+  function acharCanal(gid, nome, tipos) {
+    const k = chave(nome);
+    const kh = k.replace(/\s+/g, "-");
+    for (let i = 0; i < tipos.length; i++) {
+      const id = recentes[gid + "|" + tipos[i] + "|" + k] || recentes[gid + "|" + tipos[i] + "|" + kh];
+      if (id) return [{ id: id, name: nome }];
+    }
+    return canaisDe(gid).filter(function (c) {
+      return tipos.indexOf(c.type) >= 0 && (chave(c.name) === k || chave(c.name) === kh);
+    });
+  }
+  function acharCargo(gid, nome) {
+    const k = chave(nome);
+    const cache = recentes[gid + "|r|" + k];
+    if (cache) return [{ id: cache, name: nome }];
+    return cargosDe(gid).filter(function (r) { return r.id !== gid && chave(r.name) === k; });
+  }
+
+  // ---- criar ----
+  function parseCanal(raw) {
+    const t = tokens(raw);
+    if (!t.length) return null;
+    const res = { nome: t.shift().v, tipo: 0, cat: null };
+    while (t.length) {
+      const k = t[0].v.toLowerCase();
+      if (!t[0].q && TIPOS[k] !== undefined) { res.tipo = TIPOS[k]; t.shift(); continue; }
+      if (!t[0].q && k === "em") {
+        t.shift();
+        res.cat = t.map(function (x) { return x.v; }).join(" ").trim();
+        break;
+      }
+      return { erro: 'Não entendi "' + t[0].v + '". Veja `.wiki "criar canal"`.' };
+    }
+    return res;
+  }
+
+  async function doCriarCanal(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const a = parseCanal(raw);
+    if (!a || a.erro) return out(ctx, (a && a.erro) || 'Use: `.criar canal "nome" texto em Categoria` (veja `.wiki "criar canal"`).');
+    let pai = null;
+    if (a.cat) {
+      const achados = acharCanal(gid, a.cat, [4]);
+      if (!achados.length) return out(ctx, 'Não achei a categoria "' + a.cat + '". Crie antes com `.criar categoria ' + a.cat + "`.");
+      pai = achados[0].id;
+    }
+    try {
+      const body = { name: a.nome, type: a.tipo };
+      if (pai) body.parent_id = pai;
+      const r = await rest().post({ url: "/guilds/" + gid + "/channels", body: body });
+      const c = r.body;
+      recentes[gid + "|" + a.tipo + "|" + chave(c.name || a.nome)] = c.id;
+      out(ctx, "✅ Canal criado: " + (a.tipo === 0 ? "#" : "") + (c.name || a.nome));
+    } catch (e) {
+      out(ctx, "❌ Não consegui criar o canal: " + erroTxt(e));
+    }
+  }
+
+  async function doCriarCategoria(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, "Use: `.criar categoria Nome`.");
+    try {
+      const r = await rest().post({ url: "/guilds/" + gid + "/channels", body: { name: nome, type: 4 } });
+      recentes[gid + "|4|" + chave(r.body.name || nome)] = r.body.id;
+      out(ctx, "✅ Categoria criada: " + (r.body.name || nome));
+    } catch (e) {
+      out(ctx, "❌ Não consegui criar a categoria: " + erroTxt(e));
+    }
+  }
+
+  // permissões dos cargos (números de bit das permissões do Discord)
+  function mascara(bits) {
+    let r = BigInt(0);
+    bits.forEach(function (b) { r = r | (BigInt(1) << BigInt(b)); });
+    return r.toString();
+  }
+  function permissoesDoCargo(num) {
+    const membro = [0, 6, 9, 10, 11, 14, 15, 16, 18, 20, 21, 25, 26, 31, 32, 35, 37, 38, 39, 42, 45, 46, 49, 50];
+    const todas = [];
+    for (let i = 0; i <= 50; i++) todas.push(i);
+    if (num === 1) return "0";
+    if (num === 2) return mascara(membro);
+    if (num === 3) return mascara(membro.concat([8, 36, 43, 44]));
+    if (num === 4) return mascara(membro.concat([1, 7, 8, 13, 22, 23, 24, 27, 33, 34, 36, 40]));
+    if (num === 5) return mascara(todas.filter(function (b) { return b !== 3 && b !== 47; }));
+    return mascara(todas);
+  }
+
+  function parseCargo(linha) {
+    const t = tokens(linha);
+    if (t.length < 2) return { erro: 'Faltou o número em: ' + linha };
+    const num = parseInt(t[1].v, 10);
+    if (!(num >= 1 && num <= 6)) return { erro: "Número inválido (use de 1 a 6) em: " + linha };
+    let cor = 0;
+    if (t[2]) {
+      cor = corInt(t[2].v);
+      if (cor === null) return { erro: "Cor inválida em: " + linha };
+    }
+    return { nome: t[0].v, num: num, cor: cor };
+  }
+
+  async function criarUmCargo(gid, c) {
+    const r = await rest().post({ url: "/guilds/" + gid + "/roles", body: { name: c.nome, permissions: permissoesDoCargo(c.num), color: c.cor } });
+    recentes[gid + "|r|" + chave(c.nome)] = r.body.id;
+    return r.body;
+  }
+
+  async function doCriarCargos(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const linhas = String(raw || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    if (!linhas.length) return out(ctx, 'Use: `.criar cargo "Nome" 2 #random` (veja `.wiki "criar cargo"`).');
+    const itens = [];
+    const erros = [];
+    linhas.forEach(function (l) {
+      const c = parseCargo(l);
+      if (c.erro) erros.push(c.erro);
+      else itens.push(c);
+    });
+    if (erros.length) return out(ctx, "❌ Nada foi criado. Corrija:\n" + erros.join("\n"));
+    let feitos = 0;
+    const falhas = [];
+    for (let i = 0; i < itens.length; i++) {
+      try {
+        await criarUmCargo(gid, itens[i]);
+        feitos++;
+      } catch (e) {
+        falhas.push(itens[i].nome + ": " + erroTxt(e));
+      }
+      if (i < itens.length - 1) await new Promise(function (res) { setTimeout(res, 500); });
+    }
+    out(ctx, (feitos ? "✅ Cargos criados: " + feitos : "❌ Nenhum cargo criado.") + (falhas.length ? "\n❌ Falharam:\n" + falhas.join("\n") : ""));
+  }
+
+  // ---- deletar (sempre com a telinha de aceitar/cancelar) ----
+  async function doDeletarCanal(ctx, raw, tipos, rotulo) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, 'Diga o nome. Veja `.wiki "deletar ' + rotulo + '"`.');
+    const achados = acharCanal(gid, nome, tipos);
+    if (!achados.length) return out(ctx, "Não achei " + rotulo + ' com o nome "' + nome + '".');
+    if (achados.length > 1) return out(ctx, "Achei " + achados.length + " itens com esse nome. Renomeie um deles e tente de novo.");
+    const alvo = achados[0];
+    confirmar(
+      "Deletar " + rotulo,
+      'Deletar "' + nome + '"?' + (rotulo === "categoria" ? " Os canais dentro dela NÃO são apagados." : " Isso apaga o canal e as mensagens dele. Não dá para desfazer."),
+      "Deletar",
+      async function () {
+        try {
+          await rest().del({ url: "/channels/" + alvo.id });
+          esquecer(alvo.id);
+          out(ctx, "🗑️ Deletado: " + nome);
+        } catch (e) {
+          out(ctx, "❌ Não consegui deletar: " + erroTxt(e));
+        }
+      }
+    );
+  }
+
+  async function doDeletarCargo(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, 'Diga o nome. Veja `.wiki "deletar cargo"`.');
+    const achados = acharCargo(gid, nome);
+    if (!achados.length) return out(ctx, 'Não achei um cargo chamado "' + nome + '".');
+    if (achados.length > 1) return out(ctx, "Achei " + achados.length + " cargos com esse nome. Renomeie um deles e tente de novo.");
+    const alvo = achados[0];
+    confirmar("Deletar cargo", 'Deletar o cargo "' + nome + '"? Quem tem esse cargo perde ele.', "Deletar", async function () {
+      try {
+        await rest().del({ url: "/guilds/" + gid + "/roles/" + alvo.id });
+        esquecer(alvo.id);
+        out(ctx, "🗑️ Cargo deletado: " + nome);
+      } catch (e) {
+        out(ctx, "❌ Não consegui deletar o cargo: " + erroTxt(e));
+      }
+    });
+  }
+
+  // ---- textos do .wiki ----
+  function wikiCanal() {
+    return [
+      "**.criar canal**",
+      "Para criar um canal, é simples, apenas use:",
+      "",
+      '`.criar canal` "nome-do-canal" {||tipo: texto, voz ou tópicos||} em {||categoria, deixe em branco para não colocar em nenhuma categoria||}',
+      "",
+      "Exemplos:",
+      '`.criar canal "chat-geral" texto em Comunidade`',
+      '`.criar canal "call-geral" voz em Comunidade`',
+      '`.criar canal "avisos"`',
+    ].join("\n");
+  }
+  function wikiCargo() {
+    return [
+      "**.criar cargo**",
+      "Para criar cargo, ou cargos, é simples, apenas use:",
+      "",
+      '`.criar cargo` "Nome do cargo" {número}',
+      "",
+      "Aviso: coloque um código de cor no final, se quiser vir direto com cor. Use #random para gerar uma cor aleatória.",
+      "",
+      "Números:",
+      "1- Cosmético: não tem permissão nenhuma, serve só de enfeite",
+      "2- Membro: tem as permissões normais de um membro",
+      "3- Verificado: as de um membro, com algumas a mais",
+      "4- Staff: as permissões básicas de um staff (você ainda precisa configurar)",
+      "5- noadm: todas as permissões, menos Administrador. Útil para dar poder a alguém em quem você não confia 100%",
+      "6- Administrador: todas as permissões",
+      "",
+      "Para criar vários cargos de uma vez, use `.criar cargos` dentro de um bloco de código (veja `.wiki \"criar cargos\"`).",
+    ].join("\n");
+  }
+  function wikiCargos() {
+    return [
+      "**.criar cargos**",
+      "Extremamente simples, você precisa usar um bloco de código:",
+      "",
+      "```",
+      ".criar cargos",
+      '"Membro" 2 #random',
+      '"Guarda costas" 4 #random',
+      '"adm" 6 #random',
+      '"Hétero" 1 #random',
+      '"LGBT+" 1 #random',
+      '"Não Binário" 1 #random',
+      '"+18" 1 #random',
+      '"-18" 1 #random',
+      "```",
+      "",
+      'Cada linha é: "Nome" número cor. A cor é opcional.',
+    ].join("\n");
+  }
+
+  function cmdServidor(aliases, desc, usage, wiki, fn) {
+    return {
+      name: aliases[0],
+      aliases: aliases,
+      desc: desc,
+      usage: usage,
+      wiki: wiki,
+      raw: true,
+      local: true,
+      noSlash: true,
+      run: function (ctx, a) {
+        return naFila(function () { return fn(ctx, (a && a.raw) || ""); });
+      },
+    };
+  }
+
+  // ---- reconhecimento dos comandos com ponto (aceita comandos de duas palavras e bloco de código) ----
+  function matchPrefix(text) {
+    let t = text.trim();
+    const fence = t.match(/^```[a-zA-Z]*\n?([\s\S]*?)\n?```$/);
+    if (fence) t = fence[1].trim();
+    if (t.charAt(0) !== ".") return null;
+    const body = t.slice(1);
+    let best = null;
+    CMDS.forEach(function (c) {
+      c.aliases.forEach(function (al) {
+        const re = new RegExp("^" + al.replace(/\s+/g, "\\s+") + "(?=\\s|$)", "i");
+        if (re.test(body) && (!best || al.length > best.len)) best = { cmd: c, len: al.length, re: re };
+      });
+    });
+    if (!best) return null;
+    return { cmd: best.cmd, rest: body.replace(best.re, "").trim() };
   }
 
   // ===== Ciclo de vida do plugin =====
@@ -883,6 +1369,7 @@
       paginasReady = loadPaginas().catch(function () {});
 
       CMDS.forEach(function (c) {
+        if (c.noSlash) return;
         unregs.push(
           vendetta.commands.registerCommand({
             name: c.name,
@@ -924,7 +1411,7 @@
       flushPaginas();
       // os dados salvos NÃO são apagados ao descarregar
     },
-    settings: PaginasConfig,
+    settings: TweetConfig,
   };
 
   return Object.assign({ default: life }, life);
