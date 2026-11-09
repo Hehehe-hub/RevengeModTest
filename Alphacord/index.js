@@ -1396,3 +1396,315 @@
 
   // ---- .criar tudo: monta cargos, categorias e canais a partir de um JSON ----
   function esperar(ms) {
+        return new Promise(function (res) { setTimeout(res, ms); });
+  }
+  function listaNomes(v) {
+    return Array.isArray(v) ? v.map(String) : [];
+  }
+  function confirmarCriar(titulo, texto, fn) {
+    vendetta.ui.alerts.showConfirmationAlert({
+      title: titulo,
+      content: texto,
+      confirmText: "Criar",
+      cancelText: "Cancelar",
+      confirmColor: "brand",
+      onConfirm: fn,
+    });
+  }
+
+  function normCanal(c, ref, erros) {
+    const o = typeof c === "string" ? { nome: c } : Array.isArray(c) ? { nome: c[0], tipo: c[1] } : c || {};
+    if (!o.nome) { erros.push(ref + ": falta o nome do canal"); return null; }
+    const tipo = o.tipo === undefined || o.tipo === null ? 0 : TIPOS[chave(o.tipo)];
+    if (tipo === undefined) { erros.push(ref + ' ("' + o.nome + '"): tipo inválido (use texto, voz ou topicos)'); return null; }
+    return {
+      nome: String(o.nome),
+      tipo: tipo,
+      topico: o.topico ? String(o.topico) : null,
+      ro: !!o.somente_leitura,
+      priv: o.privado_para ? listaNomes(o.privado_para) : null,
+      escrevem: listaNomes(o.escrevem),
+    };
+  }
+
+  function montarPlano(dados, gid) {
+    const erros = [];
+    const plano = { cargos: [], cats: [], soltos: [], erros: erros, total: 0 };
+    if (!dados || typeof dados !== "object" || Array.isArray(dados)) {
+      erros.push('O JSON precisa começar com { e ter "cargos", "categorias" e/ou "canais".');
+      return plano;
+    }
+    (dados.cargos || []).forEach(function (c, i) {
+      const o = Array.isArray(c) ? { nome: c[0], numero: c[1], cor: c[2] } : c || {};
+      const ref = "cargo " + (i + 1) + (o.nome ? ' ("' + o.nome + '")' : "");
+      if (!o.nome) return erros.push(ref + ": falta o nome");
+      const num = parseInt(o.numero, 10);
+      if (!(num >= 1 && num <= 6)) return erros.push(ref + ": o número precisa ser de 1 a 6");
+      const cor = o.cor === undefined || o.cor === null ? 0 : corInt(String(o.cor));
+      if (cor === null) return erros.push(ref + ": cor inválida");
+      plano.cargos.push({ nome: String(o.nome), num: num, cor: cor, separar: !!o.separar });
+    });
+    (dados.categorias || []).forEach(function (cat, i) {
+      const ref = "categoria " + (i + 1);
+      if (!cat || !cat.nome) return erros.push(ref + ": falta o nome");
+      const c = { nome: String(cat.nome), priv: listaNomes(cat.privado_para), canais: [] };
+      (cat.canais || []).forEach(function (x, j) {
+        const k = normCanal(x, ref + ' ("' + c.nome + '") canal ' + (j + 1), erros);
+        if (k) c.canais.push(k);
+      });
+      plano.cats.push(c);
+    });
+    (dados.canais || []).forEach(function (x, j) {
+      const k = normCanal(x, "canal solto " + (j + 1), erros);
+      if (k) plano.soltos.push(k);
+    });
+
+    // todo cargo citado precisa existir no JSON ou no servidor
+    const doJson = {};
+    plano.cargos.forEach(function (c) { doJson[chave(c.nome)] = true; });
+    function confere(lista, onde) {
+      (lista || []).forEach(function (n) {
+        if (!doJson[chave(n)] && !acharCargo(gid, n).length) erros.push(onde + ': o cargo "' + n + '" não existe (crie em "cargos" ou no servidor)');
+      });
+    }
+    plano.cats.forEach(function (c) {
+      confere(c.priv, 'categoria "' + c.nome + '"');
+      c.canais.forEach(function (k) { confere(k.priv, 'canal "' + k.nome + '"'); confere(k.escrevem, 'canal "' + k.nome + '"'); });
+    });
+    plano.soltos.forEach(function (k) { confere(k.priv, 'canal "' + k.nome + '"'); confere(k.escrevem, 'canal "' + k.nome + '"'); });
+
+    let canais = plano.soltos.length;
+    plano.cats.forEach(function (c) { canais += c.canais.length; });
+    plano.nCanais = canais;
+    plano.total = plano.cargos.length + plano.cats.length + canais;
+    if (plano.total > 150) erros.push("Muita coisa de uma vez (" + plano.total + "). O limite é 150 itens por comando.");
+    return plano;
+  }
+
+  // permissões de visualização/escrita por cargo (1024 = ver canal, 2048 = enviar mensagens)
+  function overwritesDe(gid, priv, ro, escrevem, idDe) {
+    const map = {};
+    const faltando = [];
+    function add(id, allow, deny) {
+      const o = map[id] || (map[id] = { id: id, allow: 0, deny: 0 });
+      o.allow = o.allow | allow;
+      o.deny = o.deny | deny;
+    }
+    function resolver(nome, allow) {
+      const id = idDe(nome);
+      if (!id) faltando.push(nome);
+      else add(id, allow, 0);
+    }
+    if (priv && priv.length) {
+      add(gid, 0, 1024);
+      priv.forEach(function (n) { resolver(n, 1024); });
+    }
+    if (ro) add(gid, 0, 2048);
+    (escrevem || []).forEach(function (n) { resolver(n, 2048); });
+    const lista = Object.keys(map).map(function (k) {
+      return { id: map[k].id, type: 0, allow: String(map[k].allow), deny: String(map[k].deny) };
+    });
+    return { lista: lista, faltando: faltando };
+  }
+
+  async function executarPlano(ctx, gid, plano) {
+    const r = { cargos: 0, cats: 0, canais: 0, existiam: 0 };
+    const falhas = [];
+    const ids = {};
+    let parar = false;
+
+    function idCargo(n) {
+      return ids[chave(n)] || (acharCargo(gid, n)[0] || {}).id;
+    }
+    async function passo(rotulo, fn) {
+      if (parar) return false;
+      try {
+        await fn();
+        await esperar(600);
+        return true;
+      } catch (e) {
+        falhas.push(rotulo + ": " + erroTxt(e));
+        if (e && e.status === 403) parar = true;
+        return false;
+      }
+    }
+    async function criarCanalDoPlano(k, catId, privCat) {
+      const kk = chave(k.nome);
+      const kh = kk.replace(/\s+/g, "-");
+      const existe = canaisDe(gid).some(function (c) {
+        return c.type === k.tipo && (chave(c.name) === kk || chave(c.name) === kh) && (c.parent_id || null) === catId;
+      });
+      if (existe) { r.existiam++; return; }
+      const o = overwritesDe(gid, k.priv || privCat, k.ro, k.escrevem, idCargo);
+      if (o.faltando.length) { falhas.push('canal "' + k.nome + '": faltou o cargo ' + o.faltando.join(", ")); return; }
+      await passo('canal "' + k.nome + '"', async function () {
+        const body = { name: k.nome, type: k.tipo };
+        if (catId) body.parent_id = catId;
+        if (k.topico && k.tipo !== 2) body.topic = k.topico;
+        if (o.lista.length) body.permission_overwrites = o.lista;
+        const res = await rest().post({ url: "/guilds/" + gid + "/channels", body: body });
+        recentes[gid + "|" + k.tipo + "|" + chave(res.body.name || k.nome)] = res.body.id;
+        r.canais++;
+      });
+    }
+
+    for (let i = 0; i < plano.cargos.length; i++) {
+      const c = plano.cargos[i];
+      const ja = acharCargo(gid, c.nome);
+      if (ja.length) { ids[chave(c.nome)] = ja[0].id; r.existiam++; continue; }
+      await passo('cargo "' + c.nome + '"', async function () {
+        const res = await rest().post({
+          url: "/guilds/" + gid + "/roles",
+          body: { name: c.nome, permissions: permissoesDoCargo(c.num), color: c.cor, hoist: c.separar },
+        });
+        ids[chave(c.nome)] = res.body.id;
+        recentes[gid + "|r|" + chave(c.nome)] = res.body.id;
+        r.cargos++;
+      });
+    }
+
+    for (let i = 0; i < plano.cats.length; i++) {
+      const cat = plano.cats[i];
+      let catId = null;
+      const ja = acharCanal(gid, cat.nome, [4]);
+      if (ja.length) {
+        catId = ja[0].id;
+        r.existiam++;
+      } else {
+        const o = overwritesDe(gid, cat.priv, false, [], idCargo);
+        if (o.faltando.length) { falhas.push('categoria "' + cat.nome + '": faltou o cargo ' + o.faltando.join(", ")); continue; }
+        const ok = await passo('categoria "' + cat.nome + '"', async function () {
+          const body = { name: cat.nome, type: 4 };
+          if (o.lista.length) body.permission_overwrites = o.lista;
+          const res = await rest().post({ url: "/guilds/" + gid + "/channels", body: body });
+          catId = res.body.id;
+          recentes[gid + "|4|" + chave(res.body.name || cat.nome)] = catId;
+          r.cats++;
+        });
+        if (!ok) continue;
+      }
+      for (let j = 0; j < cat.canais.length; j++) await criarCanalDoPlano(cat.canais[j], catId, cat.priv);
+    }
+    for (let j = 0; j < plano.soltos.length; j++) await criarCanalDoPlano(plano.soltos[j], null, null);
+
+    out(
+      ctx,
+      (parar ? "⚠️ Parei no meio: você não tem permissão para isso neste servidor." : falhas.length ? "⚠️ Terminei com problemas." : "✅ Pronto!") +
+        "\nCargos: " + r.cargos + " | Categorias: " + r.cats + " | Canais: " + r.canais +
+        (r.existiam ? " | Já existiam: " + r.existiam : "") +
+        (falhas.length ? "\n❌ Problemas:\n" + falhas.slice(0, 8).join("\n") : "")
+    );
+  }
+
+  async function doCriarTudo(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    let txt = String(raw || "").trim();
+    const f = txt.match(/^```[a-zA-Z]*\n?([\s\S]*?)\n?```$/);
+    if (f) txt = f[1].trim();
+    txt = txt.replace(/[“”]/g, '"');
+    if (!txt) return out(ctx, 'Cole o JSON depois do comando, dentro de um bloco de código. Veja `.wiki "criar tudo"`.');
+    let dados;
+    try {
+      dados = JSON.parse(txt);
+    } catch (e) {
+      return out(ctx, "❌ O JSON tem um erro: " + e.message + '\nConfira vírgulas, aspas e chaves. Veja `.wiki "criar tudo"`.');
+    }
+    const plano = montarPlano(dados, gid);
+    if (plano.erros.length) return out(ctx, "❌ Nada foi criado. Corrija:\n" + plano.erros.slice(0, 10).join("\n"));
+    if (!plano.total) return out(ctx, "O JSON não tem nada para criar.");
+    confirmarCriar(
+      "Montar o servidor",
+      "Vou criar " + plano.cargos.length + " cargos, " + plano.cats.length + " categorias e " + plano.nCanais + " canais neste servidor. O que já existir é pulado. Continuar?",
+      function () { naFila(function () { return executarPlano(ctx, gid, plano); }); }
+    );
+  }
+
+  function wikiTudo() {
+    return [
+      "**.criar tudo** (ou **.montar**)",
+      "Cria cargos, categorias e canais de uma vez. Use o comando e, embaixo, um bloco de código com JSON:",
+      "",
+      ".criar tudo",
+      "```json",
+      '{"cargos":[["Admin",6,"#e74c3c"],["Membro",2,"#random"]],"categorias":[{"nome":"COMUNIDADE","canais":["chat-geral",["Call Geral","voz"]]}]}',
+      "```",
+      '**Cargo:** ["Nome", número, "cor"] (a cor é opcional)',
+      '**Canal:** "nome" (texto), ["nome","voz"] ou {"nome":"avisos","somente_leitura":true,"escrevem":["Moderador"],"topico":"texto"}',
+      '**Categoria:** {"nome":"STAFF","privado_para":["Admin"],"canais":[...]}',
+      'Canais fora de categoria vão em "canais". O que já existir é pulado e antes de criar aparece uma telinha para confirmar.',
+    ].join("\n");
+  }
+
+  // ---- reconhecimento dos comandos com ponto (aceita comandos de duas palavras e bloco de código) ----
+  function matchPrefix(text) {
+    let t = text.trim();
+    const fence = t.match(/^```[a-zA-Z]*\n?([\s\S]*?)\n?```$/);
+    if (fence) t = fence[1].trim();
+    if (t.charAt(0) !== ".") return null;
+    const body = t.slice(1);
+    let best = null;
+    CMDS.forEach(function (c) {
+      c.aliases.forEach(function (al) {
+        const re = new RegExp("^" + al.replace(/\s+/g, "\\s+") + "(?=\\s|$)", "i");
+        if (re.test(body) && (!best || al.length > best.len)) best = { cmd: c, len: al.length, re: re };
+      });
+    });
+    if (!best) return null;
+    return { cmd: best.cmd, rest: body.replace(best.re, "").trim() };
+  }
+
+  // ===== Ciclo de vida do plugin =====
+  const life = {
+    onLoad: function () {
+      ready = Promise.all([loadDb(), loadModo()]).catch(function () {});
+      paginasReady = loadPaginas().catch(function () {});
+
+      CMDS.forEach(function (c) {
+        if (c.noSlash) return;
+        unregs.push(
+          vendetta.commands.registerCommand({
+            name: c.name,
+            displayName: c.name,
+            description: c.desc,
+            displayDescription: c.desc,
+            options: (c.options || []).map(function (o) {
+              return {
+                name: o.name,
+                displayName: o.name,
+                description: o.desc,
+                displayDescription: o.desc,
+                type: 3,
+                required: !!o.required,
+              };
+            }),
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            execute: function (args, ctx) {
+              const a = {};
+              (args || []).forEach(function (x) { a[x.name] = x.value; });
+              run(c, { channelId: ctx.channel.id, viaPrefix: false }, a);
+            },
+          })
+        );
+      });
+
+      if (MA) unpatchSend = patcher.instead("sendMessage", MA, onSend);
+      toast("Alphacord carregado!");
+    },
+    onUnload: function () {
+      unregs.splice(0).forEach(function (u) {
+        try { u(); } catch (e) {}
+      });
+      if (unpatchSend) unpatchSend();
+      unpatchSend = null;
+      pending = null;
+      flushPaginas();
+      // os dados salvos NÃO são apagados ao descarregar
+    },
+    settings: TweetConfig,
+  };
+
+  return Object.assign({ default: life }, life);
+})()
