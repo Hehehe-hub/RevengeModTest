@@ -370,6 +370,14 @@
         out(ctx, "Excluir o suspeito #" + s.num + " (" + clean(cap(s.nome)) + ")? Mande `sim` para confirmar. Qualquer outra coisa cancela.");
       },
     },
+    {
+      name: "paginas",
+      aliases: ["paginas", "abas"],
+      desc: "Abre a Aba Páginas (suas anotações privadas)",
+      run: function (ctx) {
+        abrirPaginas(ctx);
+      },
+    },
   ];
 
   async function run(c, ctx, args) {
@@ -431,10 +439,448 @@
     return orig.apply(null, args);
   }
 
+  // ===== Aba Páginas: gerenciador privado de anotações =====
+  const React = vendetta.metro.common.React;
+  const RN = vendetta.metro.common.ReactNative;
+  const h = React.createElement;
+  const PKEY = "ALPHACORD_PAGINAS_V1";
+  const ALERT_KEY = "alphacord-paginas";
+  let paginas = { nodes: [] };
+  let paginasOk = false;
+  let paginasReady = Promise.resolve();
+  let paginasSaving = Promise.resolve();
+  let paginasTimer = null;
+
+  function mergeNodes(list) {
+    const map = {};
+    list.forEach(function (d) {
+      if (!d || !Array.isArray(d.nodes)) return;
+      d.nodes.forEach(function (n) {
+        const cur = map[n.uid];
+        if (!cur || (n.editadoEm || 0) > (cur.editadoEm || 0)) map[n.uid] = n;
+      });
+    });
+    return { nodes: Object.keys(map).map(function (k) { return map[k]; }) };
+  }
+
+  async function loadPaginas() {
+    const found = [];
+    const m = mmkv();
+    try {
+      if (m) {
+        const raw = await m.getItem(PKEY);
+        paginasOk = true;
+        if (raw) found.push(JSON.parse(raw));
+      }
+    } catch (e) {
+      paginasOk = false; // não sobrescreve se não conseguiu ler
+    }
+    try {
+      const raw = vendetta.plugin.storage.paginasJson;
+      if (raw) found.push(JSON.parse(raw));
+    } catch (e) {}
+    paginas = mergeNodes(found);
+    if (found.length) await savePaginas();
+  }
+
+  async function doSavePaginas() {
+    const json = JSON.stringify(paginas);
+    let ok = false;
+    try {
+      const m = mmkv();
+      if (m && paginasOk) {
+        const prev = await m.getItem(PKEY);
+        if (prev) {
+          let antes = 0;
+          try { antes = JSON.parse(prev).nodes.length; } catch (e) {}
+          // se vai diminuir (exclusão), guarda uma cópia de segurança
+          if (antes > paginas.nodes.length) await m.setItem(PKEY + "_ANTES_EXCLUIR", prev);
+        }
+        await m.setItem(PKEY, json);
+        ok = true;
+      }
+    } catch (e) {}
+    try {
+      vendetta.plugin.storage.paginasJson = json;
+      ok = true;
+    } catch (e) {}
+    return ok;
+  }
+
+  function savePaginas() {
+    paginasSaving = paginasSaving.then(doSavePaginas);
+    return paginasSaving;
+  }
+  function savePaginasSoon() {
+    clearTimeout(paginasTimer);
+    paginasTimer = setTimeout(function () { paginasTimer = null; savePaginas(); }, 800);
+  }
+  function flushPaginas() {
+    if (paginasTimer) {
+      clearTimeout(paginasTimer);
+      paginasTimer = null;
+      savePaginas();
+    }
+  }
+
+  function novoId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  function achar(id) {
+    return paginas.nodes.find(function (n) { return n.uid === id; });
+  }
+  function filhos(pai) {
+    return paginas.nodes
+      .filter(function (n) { return (n.pai || null) === pai; })
+      .sort(function (a, b) {
+        if (a.tipo !== b.tipo) return a.tipo === "caminho" ? -1 : 1;
+        return (a.criadoEm || 0) - (b.criadoEm || 0);
+      });
+  }
+  function descendentes(id) {
+    let r = [];
+    filhos(id).forEach(function (f) {
+      r.push(f);
+      r = r.concat(descendentes(f.uid));
+    });
+    return r;
+  }
+
+  function copiar(texto) {
+    try {
+      const cb = vendetta.metro.common.clipboard || findByProps("setString");
+      cb.setString(texto);
+      toast("Copiado!");
+      return;
+    } catch (e) {}
+    try {
+      RN.Clipboard.setString(texto);
+      toast("Copiado!");
+    } catch (e) {
+      toast("Não consegui copiar");
+    }
+  }
+
+  function mkStyles() {
+    const sc = (vendetta.ui && vendetta.ui.semanticColors) || {};
+    const ss = vendetta.metro.common.stylesheet;
+    const mk = (ss && ss.createThemedStyleSheet) || RN.StyleSheet.create;
+    const bg = sc.BACKGROUND_PRIMARY || "#1e1f22";
+    const bg2 = sc.BACKGROUND_SECONDARY || "#2b2d31";
+    const txt = sc.TEXT_NORMAL || "#f2f3f5";
+    const mut = sc.TEXT_MUTED || "#949ba4";
+    const acc = sc.TEXT_LINK || "#5865f2";
+    return mk({
+      root: { flex: 1, backgroundColor: bg },
+      topo: { flexDirection: "row", alignItems: "center", padding: 12, backgroundColor: bg2 },
+      migalhas: { flexGrow: 1 },
+      mig: { color: acc, fontSize: 15 },
+      migAtual: { color: txt, fontSize: 15, fontWeight: "bold" },
+      sep: { color: mut, fontSize: 15 },
+      sair: { color: "#ed4245", fontSize: 15, fontWeight: "bold", marginLeft: 12 },
+      item: { padding: 14, marginHorizontal: 12, marginTop: 8, borderRadius: 8, backgroundColor: bg2 },
+      itemTxt: { color: txt, fontSize: 16 },
+      vazio: { color: mut, textAlign: "center", marginTop: 40 },
+      mais: { position: "absolute", right: 20, bottom: 24, width: 56, height: 56, borderRadius: 28, backgroundColor: acc, alignItems: "center", justifyContent: "center" },
+      maisTxt: { color: "#ffffff", fontSize: 30 },
+      corpo: { padding: 16 },
+      texto: { color: txt, fontSize: 16, lineHeight: 24 },
+      codigo: { color: txt, backgroundColor: bg2, fontFamily: "monospace", fontSize: 15 },
+      input: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, marginTop: 8 },
+      barra: { flexDirection: "row", justifyContent: "flex-end", padding: 8 },
+      btn: { color: acc, fontSize: 15, fontWeight: "bold", padding: 8 },
+      fundo: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" },
+      menu: { backgroundColor: bg2, padding: 12, borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+      menuItem: { padding: 14 },
+    });
+  }
+
+  // Texto da página: o que estiver entre `crases` copia ao tocar
+  function renderTexto(txt, S) {
+    if (!txt) return h(RN.Text, { style: S.vazio }, "Página vazia. Toque em Editar para escrever.");
+    const partes = txt.split(/(```[\s\S]*?```|`[^`\n]+`)/);
+    return h(
+      RN.Text,
+      { style: S.texto },
+      partes.map(function (p, i) {
+        const bloco = p.length > 6 && p.indexOf("```") === 0;
+        const inline = !bloco && p.length > 2 && p.charAt(0) === "`" && p.charAt(p.length - 1) === "`";
+        if (!bloco && !inline) return p;
+        const cod = bloco ? p.slice(3, -3).replace(/^\n/, "") : p.slice(1, -1);
+        return h(RN.Text, { key: i, style: S.codigo, onPress: function () { copiar(cod); } }, " " + cod + " ");
+      })
+    );
+  }
+
+  function PaginasApp(props) {
+    const S = React.useMemo(mkStyles, []);
+    const force = React.useReducer(function (x) { return x + 1; }, 0)[1];
+    const [caminho, setCaminho] = React.useState([]);
+    const [pagina, setPagina] = React.useState(null);
+    const [editando, setEditando] = React.useState(false);
+    const [menu, setMenu] = React.useState(null);
+    const [form, setForm] = React.useState(null);
+    const [carregado, setCarregado] = React.useState(false);
+
+    React.useEffect(function () {
+      paginasReady.then(function () { setCarregado(true); });
+      return function () { flushPaginas(); };
+    }, []);
+
+    const atual = caminho.length ? caminho[caminho.length - 1] : null;
+    const nodePagina = pagina ? achar(pagina) : null;
+
+    function irPara(n) {
+      setPagina(null);
+      setEditando(false);
+      setCaminho(caminho.slice(0, n));
+    }
+    function voltar() {
+      if (pagina) { setPagina(null); setEditando(false); }
+      else if (caminho.length) setCaminho(caminho.slice(0, -1));
+      else props.onClose();
+    }
+    function sair() {
+      flushPaginas();
+      props.onClose();
+    }
+
+    function confirmarForm() {
+      const nome = (form.nome || "").trim();
+      if (!nome) return toast("Escreva um nome");
+      if (form.modo === "novo") {
+        const agora = Date.now();
+        const no = { uid: novoId(), pai: atual, tipo: form.tipo, nome: nome, conteudo: "", criadoEm: agora, editadoEm: agora };
+        paginas.nodes.push(no);
+        if (form.tipo === "pagina") { setPagina(no.uid); setEditando(true); }
+      } else {
+        const n = achar(form.id);
+        if (n) { n.nome = nome; n.editadoEm = Date.now(); }
+      }
+      savePaginas();
+      setForm(null);
+      force();
+    }
+
+    function excluir(n) {
+      const ids = {};
+      [n].concat(descendentes(n.uid)).forEach(function (x) { ids[x.uid] = true; });
+      paginas.nodes = paginas.nodes.filter(function (x) { return !ids[x.uid]; });
+      if (pagina === n.uid) { setPagina(null); setEditando(false); }
+      savePaginas();
+      force();
+    }
+    function pedirExclusao(n) {
+      const msg = n.tipo === "caminho"
+        ? 'Excluir o caminho "' + n.nome + '" e tudo dentro dele (' + descendentes(n.uid).length + " itens)?"
+        : 'Excluir a página "' + n.nome + '"?';
+      RN.Alert.alert("Excluir", msg, [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Excluir", style: "destructive", onPress: function () { excluir(n); } },
+      ]);
+    }
+
+    function sheet(opcoes) {
+      return h(
+        RN.TouchableOpacity,
+        { activeOpacity: 1, style: S.fundo, onPress: function () { setMenu(null); } },
+        h(
+          RN.View,
+          { style: S.menu },
+          opcoes.map(function (o, i) {
+            return h(RN.TouchableOpacity, { key: i, style: S.menuItem, onPress: o[1] }, h(RN.Text, { style: S.itemTxt }, o[0]));
+          })
+        )
+      );
+    }
+
+    // trilha: Aba Páginas | Testes | Testes Plugins | 1
+    const migas = [{ label: "Aba Páginas", fn: function () { irPara(0); } }];
+    caminho.forEach(function (id, i) {
+      const n = achar(id);
+      migas.push({ label: n ? n.nome : "?", fn: function () { irPara(i + 1); } });
+    });
+    if (nodePagina) migas.push({ label: nodePagina.nome });
+
+    const topo = h(
+      RN.View,
+      { style: S.topo },
+      h(RN.TouchableOpacity, { onPress: voltar }, h(RN.Text, { style: S.mig }, "←  ")),
+      h(
+        RN.ScrollView,
+        { horizontal: true, style: S.migalhas, showsHorizontalScrollIndicator: false },
+        migas.map(function (m, i) {
+          const ultimo = i === migas.length - 1;
+          return h(
+            React.Fragment,
+            { key: i },
+            i > 0 ? h(RN.Text, { style: S.sep }, "  |  ") : null,
+            h(RN.TouchableOpacity, { onPress: ultimo ? undefined : m.fn }, h(RN.Text, { style: ultimo ? S.migAtual : S.mig }, m.label))
+          );
+        })
+      ),
+      h(RN.TouchableOpacity, { onPress: sair }, h(RN.Text, { style: S.sair }, "Sair"))
+    );
+
+    let corpo;
+    if (!carregado) {
+      corpo = h(RN.Text, { style: S.vazio }, "Carregando...");
+    } else if (nodePagina) {
+      corpo = h(
+        RN.View,
+        { style: { flex: 1 } },
+        h(
+          RN.View,
+          { style: S.barra },
+          h(RN.TouchableOpacity, { onPress: function () { setEditando(!editando); flushPaginas(); } }, h(RN.Text, { style: S.btn }, editando ? "Concluir" : "Editar")),
+          h(RN.TouchableOpacity, { onPress: function () { setMenu({ id: nodePagina.uid }); } }, h(RN.Text, { style: S.btn }, "Mais"))
+        ),
+        editando
+          ? h(
+              RN.ScrollView,
+              { style: S.corpo, keyboardShouldPersistTaps: "handled" },
+              h(RN.TextInput, {
+                style: S.input,
+                multiline: true,
+                defaultValue: nodePagina.conteudo || "",
+                placeholder: "Escreva aqui. Use `crases` para texto que copia ao tocar.",
+                placeholderTextColor: "#888888",
+                onChangeText: function (t) {
+                  nodePagina.conteudo = t;
+                  nodePagina.editadoEm = Date.now();
+                  savePaginasSoon();
+                },
+              })
+            )
+          : h(RN.ScrollView, { style: S.corpo }, renderTexto(nodePagina.conteudo || "", S))
+      );
+    } else {
+      const lista = filhos(atual);
+      corpo = h(
+        RN.ScrollView,
+        { style: { flex: 1 } },
+        lista.length
+          ? lista.map(function (n) {
+              return h(
+                RN.TouchableOpacity,
+                {
+                  key: n.uid,
+                  style: S.item,
+                  onPress: function () { if (n.tipo === "caminho") setCaminho(caminho.concat(n.uid)); else setPagina(n.uid); },
+                  onLongPress: function () { setMenu({ id: n.uid }); },
+                },
+                h(RN.Text, { style: S.itemTxt }, n.tipo === "caminho" ? "[ " + n.nome + " ]" : "> " + n.nome)
+              );
+            })
+          : h(RN.Text, { style: S.vazio }, "Vazio por aqui. Toque no + para adicionar."),
+        h(RN.View, { style: { height: 100 } })
+      );
+    }
+
+    let overlay = null;
+    if (form) {
+      overlay = h(
+        RN.View,
+        { style: S.fundo },
+        h(
+          RN.View,
+          { style: S.menu },
+          h(RN.Text, { style: S.itemTxt }, form.modo === "novo" ? (form.tipo === "pagina" ? "Nome da página" : "Nome do caminho") : "Novo nome"),
+          h(RN.TextInput, {
+            style: S.input,
+            autoFocus: true,
+            defaultValue: form.nome,
+            onChangeText: function (t) { setForm(Object.assign({}, form, { nome: t })); },
+          }),
+          h(
+            RN.View,
+            { style: S.barra },
+            h(RN.TouchableOpacity, { onPress: function () { setForm(null); } }, h(RN.Text, { style: S.btn }, "Cancelar")),
+            h(RN.TouchableOpacity, { onPress: confirmarForm }, h(RN.Text, { style: S.btn }, "OK"))
+          )
+        )
+      );
+    } else if (menu === "mais") {
+      overlay = sheet([
+        ["Adicionar página", function () { setMenu(null); setForm({ modo: "novo", tipo: "pagina", nome: "" }); }],
+        ["Adicionar caminho", function () { setMenu(null); setForm({ modo: "novo", tipo: "caminho", nome: "" }); }],
+      ]);
+    } else if (menu && menu.id) {
+      const n = achar(menu.id);
+      if (n) {
+        overlay = sheet([
+          ["Renomear", function () { setMenu(null); setForm({ modo: "renomear", id: n.uid, nome: n.nome }); }],
+          ["Excluir", function () { setMenu(null); pedirExclusao(n); }],
+        ]);
+      }
+    }
+
+    return h(
+      RN.View,
+      { style: S.root },
+      topo,
+      corpo,
+      carregado && !nodePagina
+        ? h(RN.TouchableOpacity, { style: S.mais, onPress: function () { setMenu("mais"); } }, h(RN.Text, { style: S.maisTxt }, "+"))
+        : null,
+      overlay
+    );
+  }
+
+  // Se algo der errado na tela, mostra o erro em vez de travar o app
+  class Barreira extends React.Component {
+    constructor(p) {
+      super(p);
+      this.state = { erro: null };
+    }
+    static getDerivedStateFromError(e) {
+      return { erro: e };
+    }
+    render() {
+      if (this.state.erro) {
+        return h(RN.Text, { style: { color: "#ed4245", padding: 16 } }, "Erro na Aba Páginas: " + (this.state.erro.message || this.state.erro));
+      }
+      return this.props.children;
+    }
+  }
+
+  // Abertura 1: tela do plugin (Configurações > Plugins > Alphacord > engrenagem)
+  function PaginasConfig() {
+    let nav = null;
+    try { nav = vendetta.metro.common.NavigationNative.useNavigation(); } catch (e) {}
+    return h(
+      RN.View,
+      { style: { flex: 1 } },
+      h(Barreira, null, h(PaginasApp, { onClose: function () { try { nav.goBack(); } catch (e) {} } }))
+    );
+  }
+
+  // Abertura 2: .paginas ou /paginas (janela por cima do chat)
+  function fecharPaginas() {
+    flushPaginas();
+    try { findByProps("openAlert", "dismissAlert").dismissAlert(ALERT_KEY); } catch (e) {}
+  }
+  function abrirPaginas(ctx) {
+    try {
+      const win = RN.Dimensions.get("window");
+      findByProps("openAlert", "dismissAlert").openAlert(
+        ALERT_KEY,
+        h(
+          RN.View,
+          { style: { width: win.width, height: win.height * 0.85, overflow: "hidden", borderRadius: 12 } },
+          h(Barreira, null, h(PaginasApp, { onClose: fecharPaginas }))
+        )
+      );
+      return;
+    } catch (e) {}
+    out(ctx, "Não consegui abrir a aba por aqui. Abra em Configurações > Plugins > Alphacord (engrenagem).");
+  }
+
   // ===== Ciclo de vida do plugin =====
   const life = {
     onLoad: function () {
       ready = loadDb().catch(function () {});
+      paginasReady = loadPaginas().catch(function () {});
 
       CMDS.forEach(function (c) {
         unregs.push(
@@ -475,8 +921,10 @@
       if (unpatchSend) unpatchSend();
       unpatchSend = null;
       pending = null;
+      flushPaginas();
       // os dados salvos NÃO são apagados ao descarregar
     },
+    settings: PaginasConfig,
   };
 
   return Object.assign({ default: life }, life);
