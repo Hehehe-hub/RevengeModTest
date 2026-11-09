@@ -153,40 +153,11 @@
     toast(content.slice(0, 100));
   }
 
-  // Mensagem de verdade, na sua conta
-  function sendReal(channelId, content) {
-    if (!MA || typeof MA.sendMessage !== "function") {
-      toast("Não encontrei a função de envio da sua conta.");
-      return;
-    }
-    let result;
-    internal = true;
-    try {
-      // O contexto MA é necessário em versões do cliente que usam this internamente.
-      result = MA.sendMessage.call(MA, channelId, {
-        content: content,
-        tts: false,
-        invalidEmojis: [],
-        validNonShortcutEmojis: [],
-      });
-    } catch (e) {
-      toast("Falha ao enviar pela sua conta: " + erroTxt(e));
-      return;
-    } finally {
-      internal = false;
-    }
-    if (result && typeof result.catch === "function") {
-      result.catch(function (e) {
-        toast("Falha ao enviar pela sua conta: " + erroTxt(e));
-      });
-    }
-    return result;
-  }
-
+  // Todas as respostas do plugin são locais.
+  // O plugin não chama sendMessage para enviar como a conta do usuário.
   function out(c, text) {
     chunk(text).forEach(function (p) {
-      if (modoConta && MA) sendReal(c.channelId, p);
-      else botMsg(c.channelId, p);
+      botMsg(c.channelId, p);
     });
   }
 
@@ -430,18 +401,6 @@
       '**.deletar categorias**\nEnvie uma categoria por linha. Os canais dentro delas não são apagados.',
       function (ctx, raw) { return doDeletarEmMassa(ctx, raw, "categoria"); }
     ),
-    {
-      name: "trocar",
-      aliases: ["trocar"],
-      desc: "Troca quem responde: sua conta ou o bot",
-      usage: "(opcional: conta ou bot)",
-      raw: true,
-      local: true,
-      options: [{ name: "modo", desc: "conta ou bot (vazio = alterna)", required: false }],
-      run: function (ctx, args) {
-        return trocarModo(ctx, String(args.raw || args.modo || ""));
-      },
-    },
     cmdServidor(["criar tudo", "montar"], "Monta cargos, categorias e canais de uma vez (JSON)", "(JSON em bloco de código)", wikiTudo(), doCriarTudo),
     {
       name: "wiki",
@@ -914,44 +873,6 @@
     };
   }
 
-  // ---- .trocar: responder pela sua conta ou pelo bot ----
-  const MODO_KEY = "ALPHACORD_MODO_V1";
-  let modoConta = false;
-
-  async function loadModo() {
-    let v = null;
-    try {
-      const m = mmkv();
-      if (m) v = await m.getItem(MODO_KEY);
-    } catch (e) {}
-    if (v === null || v === undefined) {
-      try { v = vendetta.plugin.storage.modo; } catch (e) {}
-    }
-    modoConta = v === "conta";
-  }
-  async function saveModo() {
-    const v = modoConta ? "conta" : "bot";
-    try {
-      const m = mmkv();
-      if (m) await m.setItem(MODO_KEY, v);
-    } catch (e) {}
-    try { vendetta.plugin.storage.modo = v; } catch (e) {}
-  }
-  async function trocarModo(ctx, arg) {
-    const a = chave(arg);
-    if (a === "conta" || a === "minha conta") modoConta = true;
-    else if (a === "bot") modoConta = false;
-    else if (!a) modoConta = !modoConta;
-    else return botMsg(ctx.channelId, "Use `.trocar`, `.trocar conta` ou `.trocar bot`.");
-    await saveModo();
-    botMsg(
-      ctx.channelId,
-      modoConta
-        ? "🔁 Agora as respostas saem pela **sua conta** (todo mundo no chat vê)."
-        : "🔁 Agora as respostas saem pelo **bot** (só você vê)."
-    );
-  }
-
   // ---- .criar tudo: monta cargos, categorias e canais a partir de um JSON ----
   function esperar(ms) {
     return new Promise(function (res) { setTimeout(res, ms); });
@@ -1238,7 +1159,7 @@
   // ===== Ciclo de vida do plugin =====
   const life = {
     onLoad: function () {
-      ready = Promise.all([loadDb(), loadModo()]).catch(function () {});
+      ready = loadDb().catch(function () {});
 
       CMDS.forEach(function (c) {
         if (c.noSlash) return;
