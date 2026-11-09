@@ -602,4 +602,487 @@
   function copiar(texto) {
     try {
       const cb = vendetta.metro.common.clipboard || findByProps("setString");
-      
+            toast("Copiado!");
+      return;
+    } catch (e) {}
+    try {
+      RN.Clipboard.setString(texto);
+      toast("Copiado!");
+    } catch (e) {
+      toast("Não consegui copiar");
+    }
+  }
+
+  function mkStyles() {
+    const sc = (vendetta.ui && vendetta.ui.semanticColors) || {};
+    const ss = vendetta.metro.common.stylesheet;
+    const mk = (ss && ss.createThemedStyleSheet) || RN.StyleSheet.create;
+    const bg = sc.BACKGROUND_PRIMARY || "#1e1f22";
+    const bg2 = sc.BACKGROUND_SECONDARY || "#2b2d31";
+    const txt = sc.TEXT_NORMAL || "#f2f3f5";
+    const mut = sc.TEXT_MUTED || "#949ba4";
+    const acc = sc.TEXT_LINK || "#5865f2";
+    return mk({
+      root: { flex: 1, backgroundColor: bg },
+      topo: { flexDirection: "row", alignItems: "center", padding: 12, backgroundColor: bg2 },
+      migalhas: { flexGrow: 1 },
+      mig: { color: acc, fontSize: 15 },
+      migAtual: { color: txt, fontSize: 15, fontWeight: "bold" },
+      sep: { color: mut, fontSize: 15 },
+      sair: { color: "#ed4245", fontSize: 15, fontWeight: "bold", marginLeft: 12 },
+      secao: { color: mut, fontSize: 12, fontWeight: "bold", marginTop: 16, marginBottom: 6, marginHorizontal: 16 },
+      item: { padding: 14, marginHorizontal: 12, marginTop: 8, borderRadius: 8, backgroundColor: bg2 },
+      itemTxt: { color: txt, fontSize: 16 },
+      sub: { color: mut, fontSize: 13 },
+      vazio: { color: mut, textAlign: "center", marginTop: 24, marginBottom: 8 },
+      corpo: { padding: 16 },
+      texto: { color: txt, fontSize: 16, lineHeight: 24 },
+      codigo: { color: txt, backgroundColor: bg2, fontFamily: "monospace", fontSize: 15 },
+      input: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, minHeight: 160, textAlignVertical: "top" },
+      campo: { color: txt, backgroundColor: bg2, borderRadius: 8, padding: 12, fontSize: 16, marginHorizontal: 16, marginTop: 8 },
+      amostra: { height: 90, marginHorizontal: 16, marginTop: 16, borderRadius: 12, alignItems: "center", justifyContent: "center" },
+      amostraTxt: { fontSize: 18, fontWeight: "bold" },
+      grade: { flexDirection: "row", flexWrap: "wrap", marginHorizontal: 16 },
+    });
+  }
+
+  // ----- peças de interface nativas do Discord (Forms) -----
+  function formsDoDiscord() {
+    return (vendetta.ui && vendetta.ui.components && vendetta.ui.components.Forms) || {};
+  }
+  function icone() {
+    for (let i = 0; i < arguments.length; i++) {
+      try {
+        const id = vendetta.ui.assets.getAssetIDByName(arguments[i]);
+        if (id) return id;
+      } catch (e) {}
+    }
+    return undefined;
+  }
+  function Linha(p, S) {
+    const F = formsDoDiscord();
+    const Row = F.FormRow;
+    if (Row) {
+      return h(Row, {
+        key: p.key,
+        label: p.label,
+        subLabel: p.sub,
+        leading: p.icone && Row.Icon ? h(Row.Icon, { source: p.icone }) : undefined,
+        trailing: p.arrow && Row.Arrow ? h(Row.Arrow, null) : undefined,
+        onPress: p.onPress,
+      });
+    }
+    return h(
+      RN.TouchableOpacity,
+      { key: p.key, style: S.item, onPress: p.onPress },
+      h(RN.Text, { style: S.itemTxt }, p.label),
+      p.sub ? h(RN.Text, { style: S.sub }, p.sub) : null
+    );
+  }
+  function Secao(key, titulo, filhosEl, S) {
+    const F = formsDoDiscord();
+    if (F.FormSection) return h(F.FormSection, { key: key, title: titulo }, filhosEl);
+    return h(RN.View, { key: key }, h(RN.Text, { style: S.secao }, titulo), filhosEl);
+  }
+
+  // ----- telinhas nativas de pergunta e de aceitar/cancelar -----
+  function pedirNome(titulo, inicial, botao, cb) {
+    vendetta.ui.alerts.showInputAlert({
+      title: titulo,
+      initialValue: inicial || "",
+      placeholder: "Nome",
+      confirmText: botao,
+      cancelText: "Cancelar",
+      onConfirm: function (v) {
+        const nome = String(v || "").trim();
+        if (!nome) return toast("Escreva um nome");
+        cb(nome);
+      },
+    });
+  }
+  function confirmar(titulo, texto, botao, fn) {
+    vendetta.ui.alerts.showConfirmationAlert({
+      title: titulo,
+      content: texto,
+      confirmText: botao,
+      cancelText: "Cancelar",
+      confirmColor: "red",
+      onConfirm: fn,
+    });
+  }
+
+  // ----- cores -----
+  function hexValido(s) {
+    return /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s);
+  }
+  function hsvHex(hh, s, v) {
+    const c = v * s;
+    const x = c * (1 - Math.abs(((hh / 60) % 2) - 1));
+    const m = v - c;
+    let r = 0, g = 0, b = 0;
+    if (hh < 60) { r = c; g = x; }
+    else if (hh < 120) { r = x; g = c; }
+    else if (hh < 180) { g = c; b = x; }
+    else if (hh < 240) { g = x; b = c; }
+    else if (hh < 300) { r = x; b = c; }
+    else { r = c; b = x; }
+    return "#" + [r, g, b].map(function (k) {
+      return ("0" + Math.round((k + m) * 255).toString(16)).slice(-2);
+    }).join("");
+  }
+  function contraste(hex) {
+    const n = parseInt(hex.slice(1, 7), 16);
+    const lum = ((n >> 16) & 255) * 0.299 + ((n >> 8) & 255) * 0.587 + (n & 255) * 0.114;
+    return lum > 150 ? "#000000" : "#ffffff";
+  }
+  function corInt(s) {
+    if (!s) return 0;
+    if (/^#?random$/i.test(s)) return Math.floor(Math.random() * 0xfffffe) + 1;
+    let m = String(s).match(/^#?([0-9a-f]{6})$/i);
+    if (m) return parseInt(m[1], 16);
+    m = String(s).match(/^#([0-9a-f]{3})$/i);
+    if (m) return parseInt(m[1].split("").map(function (d) { return d + d; }).join(""), 16);
+    return null;
+  }
+
+  const PRONTAS = [
+    ["Vermelho", "#ed4245"], ["Laranja", "#f57c00"], ["Amarelo", "#fee75c"], ["Verde", "#3ba55d"], ["Azul", "#3498db"],
+    ["Roxo", "#9b59b6"], ["Rosa", "#ff69b4"], ["Preto", "#000000"], ["Cinza", "#808080"], ["Branco", "#ffffff"],
+  ];
+
+  function CoresTela(props) {
+    const S = props.S;
+    const [matiz, setMatiz] = React.useState(130);
+    const [cor, setCor] = React.useState("#3ba55d");
+    const [campo, setCampo] = React.useState("#3BA55D");
+    const largura = RN.Dimensions.get("window").width - 32;
+    const grade = React.useMemo(function () {
+      const cel = [];
+      for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) cel.push(hsvHex(matiz, c / 7, 1 - r * 0.12));
+      return cel;
+    }, [matiz]);
+
+    function escolher(hex) {
+      setCor(hex);
+      setCampo(hex.toUpperCase());
+    }
+
+    return h(
+      RN.ScrollView,
+      { style: { flex: 1 } },
+      h(RN.View, { style: [S.amostra, { backgroundColor: cor }] }, h(RN.Text, { style: [S.amostraTxt, { color: contraste(cor) }] }, cor.toUpperCase())),
+      Secao("matiz", "ESCOLHA O TOM", h(RN.View, { style: S.grade }, Array.apply(null, Array(16)).map(function (_, i) {
+        const hh = i * 22.5;
+        return h(RN.TouchableOpacity, {
+          key: i,
+          onPress: function () { setMatiz(hh); },
+          style: { width: largura / 16, height: 34, backgroundColor: hsvHex(hh, 1, 1) },
+        });
+      })), S),
+      Secao("tons", "CLARO, ESCURO E FORÇA", h(RN.View, { style: S.grade }, grade.map(function (hex, i) {
+        return h(RN.TouchableOpacity, {
+          key: i,
+          onPress: function () { escolher(hex); },
+          style: { width: largura / 8, height: 34, backgroundColor: hex },
+        });
+      })), S),
+      Secao("prontas", "CORES PRONTAS", h(RN.View, { style: S.grade }, PRONTAS.map(function (p) {
+        return h(RN.TouchableOpacity, {
+          key: p[0],
+          onPress: function () { escolher(p[1]); },
+          style: { width: 40, height: 40, borderRadius: 20, margin: 4, backgroundColor: p[1], borderWidth: 1, borderColor: "#888888" },
+        });
+      })), S),
+      Secao("codigo", "CÓDIGO (se você já tiver um)", h(RN.TextInput, {
+        style: S.campo,
+        value: campo,
+        autoCapitalize: "characters",
+        maxLength: 7,
+        onChangeText: function (t) {
+          setCampo(t);
+          if (/^#[0-9a-fA-F]{6}$/.test(t)) setCor(t.toLowerCase());
+        },
+      }), S),
+      Secao("acoes", "USAR A COR", [
+        Linha({ key: "c1", label: "Copiar o código da cor", sub: cor.toUpperCase(), icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar(cor.toUpperCase()); } }, S),
+        Linha({ key: "c2", label: "Copiar como texto colorido", sub: "[texto](" + cor + ")", icone: icone("ic_copy", "ic_copy_message_link"), onPress: function () { copiar("[texto](" + cor + ")"); } }, S),
+        Linha({ key: "c3", label: "Cor aleatória", icone: icone("ic_refresh", "ic_sync_24px"), onPress: function () { escolher(hsvHex(Math.random() * 359, 0.5 + Math.random() * 0.5, 0.6 + Math.random() * 0.4)); } }, S),
+      ], S),
+      h(RN.View, { style: { height: 40 } })
+    );
+  }
+
+  // Texto da página: `crases` copiam ao tocar e [palavra](#cor) colore
+  function renderTexto(txt, S) {
+    if (!txt) return h(RN.Text, { style: S.vazio }, "Página vazia. Use Editar texto para escrever.");
+    const partes = txt.split(/(```[\s\S]*?```|`[^`\n]+`|\[[^\]\n]+\]\(#[0-9a-fA-F]{3,8}\))/);
+    return h(
+      RN.Text,
+      { style: S.texto },
+      partes.map(function (p, i) {
+        const bloco = p.length > 6 && p.indexOf("```") === 0;
+        if (bloco || (p.length > 2 && p.charAt(0) === "`" && p.charAt(p.length - 1) === "`")) {
+          const cod = bloco ? p.slice(3, -3).replace(/^\n/, "") : p.slice(1, -1);
+          return h(RN.Text, { key: i, style: S.codigo, onPress: function () { copiar(cod); } }, " " + cod + " ");
+        }
+        const cor = p.match(/^\[([^\]\n]+)\]\((#[0-9a-fA-F]{3,8})\)$/);
+        if (cor && hexValido(cor[2])) return h(RN.Text, { key: i, style: { color: cor[2] } }, cor[1]);
+        return p;
+      })
+    );
+  }
+
+  // ----- tela principal do Tweet -----
+  function TweetApp(props) {
+    const S = React.useMemo(mkStyles, []);
+    const force = React.useReducer(function (x) { return x + 1; }, 0)[1];
+    const [caminho, setCaminho] = React.useState([]);
+    const [pagina, setPagina] = React.useState(null);
+    const [editando, setEditando] = React.useState(false);
+    const [tela, setTela] = React.useState("tweet");
+    const [carregado, setCarregado] = React.useState(false);
+
+    React.useEffect(function () {
+      paginasReady.then(function () { setCarregado(true); });
+      return function () { flushPaginas(); };
+    }, []);
+
+    const atual = caminho.length ? caminho[caminho.length - 1] : null;
+    const nodeAtual = atual ? achar(atual) : null;
+    const nodePagina = pagina ? achar(pagina) : null;
+
+    function irPara(n) {
+      setTela("tweet");
+      setPagina(null);
+      setEditando(false);
+      setCaminho(caminho.slice(0, n));
+    }
+    function voltar() {
+      if (tela === "cores") setTela("tweet");
+      else if (pagina) { setPagina(null); setEditando(false); }
+      else if (caminho.length) setCaminho(caminho.slice(0, -1));
+      else props.onClose();
+    }
+    function sair() {
+      flushPaginas();
+      props.onClose();
+    }
+
+    function adicionar(tipo) {
+      pedirNome(tipo === "pagina" ? "Nome da página" : "Nome do caminho", "", "Criar", function (nome) {
+        const agora = Date.now();
+        const no = { uid: novoId(), pai: atual, tipo: tipo, nome: nome, conteudo: "", criadoEm: agora, editadoEm: agora };
+        paginas.nodes.push(no);
+        savePaginas();
+        if (tipo === "pagina") { setPagina(no.uid); setEditando(true); }
+        force();
+      });
+    }
+    function renomear(n) {
+      pedirNome("Novo nome", n.nome, "Salvar", function (nome) {
+        n.nome = nome;
+        n.editadoEm = Date.now();
+        savePaginas();
+        force();
+      });
+    }
+    function excluir(n) {
+      const ids = {};
+      [n].concat(descendentes(n.uid)).forEach(function (x) { ids[x.uid] = true; });
+      paginas.nodes = paginas.nodes.filter(function (x) { return !ids[x.uid]; });
+      if (pagina === n.uid) { setPagina(null); setEditando(false); }
+      if (atual === n.uid) setCaminho(caminho.slice(0, -1));
+      savePaginas();
+      force();
+    }
+    function pedirExclusao(n) {
+      const txt = n.tipo === "caminho"
+        ? 'Excluir o caminho "' + n.nome + '" e tudo que está dentro dele (' + descendentes(n.uid).length + " itens)?"
+        : 'Excluir a página "' + n.nome + '"?';
+      confirmar("Excluir", txt, "Excluir", function () { excluir(n); });
+    }
+
+    // trilha: Tweet | Testes | Testes Plugins | 1
+    const migas = [{ label: "Tweet", fn: function () { irPara(0); } }];
+    caminho.forEach(function (id, i) {
+      const n = achar(id);
+      migas.push({ label: n ? n.nome : "?", fn: function () { irPara(i + 1); } });
+    });
+    if (tela === "cores") migas.push({ label: "Cores" });
+    else if (nodePagina) migas.push({ label: nodePagina.nome });
+
+    const topo = h(
+      RN.View,
+      { style: S.topo },
+      h(RN.TouchableOpacity, { onPress: voltar }, h(RN.Text, { style: S.mig }, "←  ")),
+      h(
+        RN.ScrollView,
+        { horizontal: true, style: S.migalhas, showsHorizontalScrollIndicator: false },
+        migas.map(function (m, i) {
+          const ultimo = i === migas.length - 1;
+          return h(
+            React.Fragment,
+            { key: i },
+            i > 0 ? h(RN.Text, { style: S.sep }, "  |  ") : null,
+            h(RN.TouchableOpacity, { onPress: ultimo ? undefined : m.fn }, h(RN.Text, { style: ultimo ? S.migAtual : S.mig }, m.label))
+          );
+        })
+      ),
+      h(RN.TouchableOpacity, { onPress: sair }, h(RN.Text, { style: S.sair }, "Sair"))
+    );
+
+    let corpo;
+    if (!carregado) {
+      corpo = h(RN.Text, { style: S.vazio }, "Carregando...");
+    } else if (tela === "cores") {
+      corpo = h(CoresTela, { S: S });
+    } else if (nodePagina) {
+      corpo = h(
+        RN.ScrollView,
+        { style: { flex: 1 }, keyboardShouldPersistTaps: "handled" },
+        Secao("pg", "PÁGINA", [
+          Linha({ key: "ed", label: editando ? "Concluir edição" : "Editar texto", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { setEditando(!editando); flushPaginas(); } }, S),
+          editando ? Linha({ key: "cor", label: "Abrir seletor de cores", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { flushPaginas(); setTela("cores"); } }, S) : null,
+          Linha({ key: "rn", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodePagina); } }, S),
+          Linha({ key: "ex", label: "Excluir página", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodePagina); } }, S),
+        ], S),
+        h(
+          RN.View,
+          { style: S.corpo },
+          editando
+            ? h(RN.TextInput, {
+                style: S.input,
+                multiline: true,
+                defaultValue: nodePagina.conteudo || "",
+                placeholder: "Escreva aqui. `crases` copiam ao tocar e [palavra](#cor) colore o texto.",
+                placeholderTextColor: "#888888",
+                onChangeText: function (t) {
+                  nodePagina.conteudo = t;
+                  nodePagina.editadoEm = Date.now();
+                  savePaginasSoon();
+                },
+              })
+            : renderTexto(nodePagina.conteudo || "", S)
+        ),
+        h(RN.View, { style: { height: 40 } })
+      );
+    } else {
+      const lista = filhos(atual);
+      corpo = h(
+        RN.ScrollView,
+        { style: { flex: 1 } },
+        Secao("add", "ADICIONAR", [
+          Linha({ key: "ap", label: "Adicionar página", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("pagina"); } }, S),
+          Linha({ key: "ac", label: "Adicionar caminho", icone: icone("ic_add_24px", "ic_add"), onPress: function () { adicionar("caminho"); } }, S),
+        ], S),
+        Secao("itens", nodeAtual ? nodeAtual.nome.toUpperCase() : "TWEET", lista.length
+          ? lista.map(function (n) {
+              return Linha({
+                key: n.uid,
+                label: n.nome,
+                sub: n.tipo === "caminho" ? "Caminho" : "Página",
+                icone: n.tipo === "caminho" ? icone("ic_category", "ic_folder") : icone("ic_message_24px", "ic_text_channel"),
+                arrow: true,
+                onPress: function () { if (n.tipo === "caminho") setCaminho(caminho.concat(n.uid)); else setPagina(n.uid); },
+              }, S);
+            })
+          : h(RN.Text, { key: "v", style: S.vazio }, "Vazio por aqui. Use Adicionar acima."), S),
+        nodeAtual
+          ? Secao("este", "ESTE CAMINHO", [
+              Linha({ key: "r1", label: "Renomear", icone: icone("ic_edit_24px", "ic_edit"), onPress: function () { renomear(nodeAtual); } }, S),
+              Linha({ key: "r2", label: "Excluir caminho", icone: icone("ic_trash_24px", "ic_trash"), onPress: function () { pedirExclusao(nodeAtual); } }, S),
+            ], S)
+          : Secao("tools", "FERRAMENTAS", [
+              Linha({ key: "t1", label: "Seletor de cores", sub: "Escolha uma cor e copie o código", icone: icone("ic_palette", "ic_theme_24px"), arrow: true, onPress: function () { setTela("cores"); } }, S),
+            ], S),
+        h(RN.View, { style: { height: 40 } })
+      );
+    }
+
+    return h(RN.View, { style: S.root }, topo, corpo);
+  }
+
+  // Se algo der errado na tela, mostra o erro em vez de travar o app
+  class Barreira extends React.Component {
+    constructor(p) {
+      super(p);
+      this.state = { erro: null };
+    }
+    static getDerivedStateFromError(e) {
+      return { erro: e };
+    }
+    render() {
+      if (this.state.erro) {
+        return h(RN.Text, { style: { color: "#ed4245", padding: 16 } }, "Erro no Tweet: " + (this.state.erro.message || this.state.erro));
+      }
+      return this.props.children;
+    }
+  }
+
+  // Abertura 1: botão "Tweet" na tela do plugin (Configurações > Plugins > Alphacord > engrenagem)
+  function TweetConfig() {
+    const S = React.useMemo(mkStyles, []);
+    const [aberto, setAberto] = React.useState(false);
+    if (aberto) {
+      return h(RN.View, { style: { flex: 1 } }, h(Barreira, null, h(TweetApp, { onClose: function () { setAberto(false); } })));
+    }
+    return h(
+      RN.ScrollView,
+      { style: S.root },
+      Secao("alpha", "ALPHACORD", [
+        Linha({ key: "tweet", label: "Tweet", sub: "Suas anotações privadas e ferramentas", icone: icone("ic_message_24px", "ic_text_channel"), arrow: true, onPress: function () { setAberto(true); } }, S),
+      ], S)
+    );
+  }
+
+  // Abertura 2: .tweet ou /tweet (janela por cima do chat)
+  function fecharTweet() {
+    flushPaginas();
+    try { findByProps("openAlert", "dismissAlert").dismissAlert(ALERT_KEY); } catch (e) {}
+  }
+  function abrirTweet(ctx) {
+    try {
+      const win = RN.Dimensions.get("window");
+      findByProps("openAlert", "dismissAlert").openAlert(
+        ALERT_KEY,
+        h(
+          RN.View,
+          { style: { width: win.width, height: win.height * 0.85, overflow: "hidden", borderRadius: 12 } },
+          h(Barreira, null, h(TweetApp, { onClose: fecharTweet }))
+        )
+      );
+      return;
+    } catch (e) {}
+    out(ctx, "Não consegui abrir o Tweet por aqui. Abra em Configurações > Plugins > Alphacord (engrenagem).");
+  }
+
+  // ===== Comandos de servidor: .criar / .deletar / .wiki =====
+  const TIPOS = { texto: 0, voz: 2, topicos: 15, "tópicos": 15, topico: 15, "tópico": 15, forum: 15, "fórum": 15 };
+  const recentes = {};
+  let fila = Promise.resolve();
+
+  function naFila(fn) {
+    fila = fila.then(fn).catch(function () {});
+    return fila;
+  }
+  function chave(s) {
+    return String(s).trim().toLowerCase();
+  }
+  function tokens(s) {
+    const res = [];
+    const re = /"([^"]*)"|“([^”]*)”|(\S+)/g;
+    let m;
+    while ((m = re.exec(s || ""))) {
+      const q = m[1] !== undefined || m[2] !== undefined;
+      res.push({ q: q, v: m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3] });
+    }
+    return res;
+  }
+  function rest() {
+    return findByProps("getAPIBaseURL", "get");
+  }
+  function erroTxt(e) {
+    const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
+    return e && e.status === 403 ? msg + " (sem permissão)" : msg;
+  }
+  function guildDe(ct
