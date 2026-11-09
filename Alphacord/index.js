@@ -1084,5 +1084,315 @@
   function erroTxt(e) {
     const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
     return e && e.status === 403 ? msg + " (sem permissão)" : msg;
+    }
+  function guildDe(ctx) {
+    try {
+      const ch = vendetta.metro.findByStoreName("ChannelStore").getChannel(ctx.channelId);
+      return ch && ch.guild_id ? ch.guild_id : null;
+    } catch (e) {
+      return null;
+    }
   }
-  function guildDe(ct
+  function canaisDe(gid) {
+    try { return Object.values(vendetta.metro.findByStoreName("ChannelStore").getMutableGuildChannelsForGuild(gid)); } catch (e) { return []; }
+  }
+  function cargosDe(gid) {
+    try { return Object.values(vendetta.metro.findByStoreName("GuildStore").getRoles(gid)); } catch (e) { return []; }
+  }
+  function esquecer(id) {
+    Object.keys(recentes).forEach(function (k) { if (recentes[k] === id) delete recentes[k]; });
+  }
+  function acharCanal(gid, nome, tipos) {
+    const k = chave(nome);
+    const kh = k.replace(/\s+/g, "-");
+    for (let i = 0; i < tipos.length; i++) {
+      const id = recentes[gid + "|" + tipos[i] + "|" + k] || recentes[gid + "|" + tipos[i] + "|" + kh];
+      if (id) return [{ id: id, name: nome }];
+    }
+    return canaisDe(gid).filter(function (c) {
+      return tipos.indexOf(c.type) >= 0 && (chave(c.name) === k || chave(c.name) === kh);
+    });
+  }
+  function acharCargo(gid, nome) {
+    const k = chave(nome);
+    const cache = recentes[gid + "|r|" + k];
+    if (cache) return [{ id: cache, name: nome }];
+    return cargosDe(gid).filter(function (r) { return r.id !== gid && chave(r.name) === k; });
+  }
+
+  // ---- criar ----
+  function parseCanal(raw) {
+    const t = tokens(raw);
+    if (!t.length) return null;
+    const res = { nome: t.shift().v, tipo: 0, cat: null };
+    while (t.length) {
+      const k = t[0].v.toLowerCase();
+      if (!t[0].q && TIPOS[k] !== undefined) { res.tipo = TIPOS[k]; t.shift(); continue; }
+      if (!t[0].q && k === "em") {
+        t.shift();
+        res.cat = t.map(function (x) { return x.v; }).join(" ").trim();
+        break;
+      }
+      return { erro: 'Não entendi "' + t[0].v + '". Veja `.wiki "criar canal"`.' };
+    }
+    return res;
+  }
+
+  async function doCriarCanal(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const a = parseCanal(raw);
+    if (!a || a.erro) return out(ctx, (a && a.erro) || 'Use: `.criar canal "nome" texto em Categoria` (veja `.wiki "criar canal"`).');
+    let pai = null;
+    if (a.cat) {
+      const achados = acharCanal(gid, a.cat, [4]);
+      if (!achados.length) return out(ctx, 'Não achei a categoria "' + a.cat + '". Crie antes com `.criar categoria ' + a.cat + "`.");
+      pai = achados[0].id;
+    }
+    try {
+      const body = { name: a.nome, type: a.tipo };
+      if (pai) body.parent_id = pai;
+      const r = await rest().post({ url: "/guilds/" + gid + "/channels", body: body });
+      const c = r.body;
+      recentes[gid + "|" + a.tipo + "|" + chave(c.name || a.nome)] = c.id;
+      out(ctx, "✅ Canal criado: " + (a.tipo === 0 ? "#" : "") + (c.name || a.nome));
+    } catch (e) {
+      out(ctx, "❌ Não consegui criar o canal: " + erroTxt(e));
+    }
+  }
+
+  async function doCriarCategoria(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, "Use: `.criar categoria Nome`.");
+    try {
+      const r = await rest().post({ url: "/guilds/" + gid + "/channels", body: { name: nome, type: 4 } });
+      recentes[gid + "|4|" + chave(r.body.name || nome)] = r.body.id;
+      out(ctx, "✅ Categoria criada: " + (r.body.name || nome));
+    } catch (e) {
+      out(ctx, "❌ Não consegui criar a categoria: " + erroTxt(e));
+    }
+  }
+
+  // permissões dos cargos (números de bit das permissões do Discord)
+  function mascara(bits) {
+    let r = BigInt(0);
+    bits.forEach(function (b) { r = r | (BigInt(1) << BigInt(b)); });
+    return r.toString();
+  }
+  function permissoesDoCargo(num) {
+    const membro = [0, 6, 9, 10, 11, 14, 15, 16, 18, 20, 21, 25, 26, 31, 32, 35, 37, 38, 39, 42, 45, 46, 49, 50];
+    const todas = [];
+    for (let i = 0; i <= 50; i++) todas.push(i);
+    if (num === 1) return "0";
+    if (num === 2) return mascara(membro);
+    if (num === 3) return mascara(membro.concat([8, 36, 43, 44]));
+    if (num === 4) return mascara(membro.concat([1, 7, 8, 13, 22, 23, 24, 27, 33, 34, 36, 40]));
+    if (num === 5) return mascara(todas.filter(function (b) { return b !== 3 && b !== 47; }));
+    return mascara(todas);
+  }
+
+  function parseCargo(linha) {
+    const t = tokens(linha);
+    if (t.length < 2) return { erro: 'Faltou o número em: ' + linha };
+    const num = parseInt(t[1].v, 10);
+    if (!(num >= 1 && num <= 6)) return { erro: "Número inválido (use de 1 a 6) em: " + linha };
+    let cor = 0;
+    if (t[2]) {
+      cor = corInt(t[2].v);
+      if (cor === null) return { erro: "Cor inválida em: " + linha };
+    }
+    return { nome: t[0].v, num: num, cor: cor };
+  }
+
+  async function criarUmCargo(gid, c) {
+    const r = await rest().post({ url: "/guilds/" + gid + "/roles", body: { name: c.nome, permissions: permissoesDoCargo(c.num), color: c.cor } });
+    recentes[gid + "|r|" + chave(c.nome)] = r.body.id;
+    return r.body;
+  }
+
+  async function doCriarCargos(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const linhas = String(raw || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean);
+    if (!linhas.length) return out(ctx, 'Use: `.criar cargo "Nome" 2 #random` (veja `.wiki "criar cargo"`).');
+    const itens = [];
+    const erros = [];
+    linhas.forEach(function (l) {
+      const c = parseCargo(l);
+      if (c.erro) erros.push(c.erro);
+      else itens.push(c);
+    });
+    if (erros.length) return out(ctx, "❌ Nada foi criado. Corrija:\n" + erros.join("\n"));
+    let feitos = 0;
+    const falhas = [];
+    for (let i = 0; i < itens.length; i++) {
+      try {
+        await criarUmCargo(gid, itens[i]);
+        feitos++;
+      } catch (e) {
+        falhas.push(itens[i].nome + ": " + erroTxt(e));
+      }
+      if (i < itens.length - 1) await new Promise(function (res) { setTimeout(res, 500); });
+    }
+    out(ctx, (feitos ? "✅ Cargos criados: " + feitos : "❌ Nenhum cargo criado.") + (falhas.length ? "\n❌ Falharam:\n" + falhas.join("\n") : ""));
+  }
+
+  // ---- deletar (sempre com a telinha de aceitar/cancelar) ----
+  async function doDeletarCanal(ctx, raw, tipos, rotulo) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, 'Diga o nome. Veja `.wiki "deletar ' + rotulo + '"`.');
+    const achados = acharCanal(gid, nome, tipos);
+    if (!achados.length) return out(ctx, "Não achei " + rotulo + ' com o nome "' + nome + '".');
+    if (achados.length > 1) return out(ctx, "Achei " + achados.length + " itens com esse nome. Renomeie um deles e tente de novo.");
+    const alvo = achados[0];
+    confirmar(
+      "Deletar " + rotulo,
+      'Deletar "' + nome + '"?' + (rotulo === "categoria" ? " Os canais dentro dela NÃO são apagados." : " Isso apaga o canal e as mensagens dele. Não dá para desfazer."),
+      "Deletar",
+      async function () {
+        try {
+          await rest().del({ url: "/channels/" + alvo.id });
+          esquecer(alvo.id);
+          out(ctx, "🗑️ Deletado: " + nome);
+        } catch (e) {
+          out(ctx, "❌ Não consegui deletar: " + erroTxt(e));
+        }
+      }
+    );
+  }
+
+  async function doDeletarCargo(ctx, raw) {
+    const gid = guildDe(ctx);
+    if (!gid) return out(ctx, "Use isso dentro de um servidor.");
+    const nome = tokens(raw).map(function (t) { return t.v; }).join(" ").trim();
+    if (!nome) return out(ctx, 'Diga o nome. Veja `.wiki "deletar cargo"`.');
+    const achados = acharCargo(gid, nome);
+    if (!achados.length) return out(ctx, 'Não achei um cargo chamado "' + nome + '".');
+    if (achados.length > 1) return out(ctx, "Achei " + achados.length + " cargos com esse nome. Renomeie um deles e tente de novo.");
+    const alvo = achados[0];
+    confirmar("Deletar cargo", 'Deletar o cargo "' + nome + '"? Quem tem esse cargo perde ele.', "Deletar", async function () {
+      try {
+        await rest().del({ url: "/guilds/" + gid + "/roles/" + alvo.id });
+        esquecer(alvo.id);
+        out(ctx, "🗑️ Cargo deletado: " + nome);
+      } catch (e) {
+        out(ctx, "❌ Não consegui deletar: " + erroTxt(e));
+      }
+    });
+  }
+
+  // ---- textos do .wiki ----
+  function wikiCanal() {
+    return [
+      "**.criar canal**",
+      "Para criar um canal, é simples, apenas use:",
+      "",
+      '`.criar canal` "nome-do-canal" {||tipo: texto, voz ou tópicos||} em {||categoria, deixe em branco para não colocar em nenhuma categoria||}',
+      "",
+      "Exemplos:",
+      '`.criar canal "chat-geral" texto em Comunidade`',
+      '`.criar canal "call-geral" voz em Comunidade`',
+      '`.criar canal "avisos"`',
+    ].join("\n");
+  }
+  function wikiCargo() {
+    return [
+      "**.criar cargo**",
+      "Para criar cargo, ou cargos, é simples, apenas use:",
+      "",
+      '`.criar cargo` "Nome do cargo" {número}',
+      "",
+      "Aviso: coloque um código de cor no final, se quiser vir direto com cor. Use #random para gerar uma cor aleatória.",
+      "",
+      "Números:",
+      "1- Cosmético: não tem permissão nenhuma, serve só de enfeite",
+      "2- Membro: tem as permissões normais de um membro",
+      "3- Verificado: as de um membro, com algumas a mais",
+      "4- Staff: as permissões básicas de um staff (você ainda precisa configurar)",
+      "5- noadm: todas as permissões, menos Administrador. Útil para dar poder a alguém em quem você não confia 100%",
+      "6- Administrador: todas as permissões",
+      "",
+      "Para criar vários cargos de uma vez, use `.criar cargos` dentro de um bloco de código (veja `.wiki \"criar cargos\"`).",
+    ].join("\n");
+  }
+  function wikiCargos() {
+    return [
+      "**.criar cargos**",
+      "Extremamente simples, você precisa usar um bloco de código:",
+      "",
+      "```",
+      ".criar cargos",
+      '"Membro" 2 #random',
+      '"Guarda costas" 4 #random',
+      '"adm" 6 #random',
+      '"Hétero" 1 #random',
+      '"LGBT+" 1 #random',
+      '"Não Binário" 1 #random',
+      '"+18" 1 #random',
+      '"-18" 1 #random',
+      "```",
+      "",
+      'Cada linha é: "Nome" número cor. A cor é opcional.',
+    ].join("\n");
+  }
+
+  function cmdServidor(aliases, desc, usage, wiki, fn) {
+    return {
+      name: aliases[0],
+      aliases: aliases,
+      desc: desc,
+      usage: usage,
+      wiki: wiki,
+      raw: true,
+      local: true,
+      noSlash: true,
+      run: function (ctx, a) {
+        return naFila(function () { return fn(ctx, (a && a.raw) || ""); });
+      },
+    };
+  }
+
+  // ---- .trocar: responder pela sua conta ou pelo bot ----
+  const MODO_KEY = "ALPHACORD_MODO_V1";
+  let modoConta = false;
+
+  async function loadModo() {
+    let v = null;
+    try {
+      const m = mmkv();
+      if (m) v = await m.getItem(MODO_KEY);
+    } catch (e) {}
+    if (v === null || v === undefined) {
+      try { v = vendetta.plugin.storage.modo; } catch (e) {}
+    }
+    modoConta = v === "conta";
+  }
+  async function saveModo() {
+    const v = modoConta ? "conta" : "bot";
+    try {
+      const m = mmkv();
+      if (m) await m.setItem(MODO_KEY, v);
+    } catch (e) {}
+    try { vendetta.plugin.storage.modo = v; } catch (e) {}
+  }
+  async function trocarModo(ctx, arg) {
+    const a = chave(arg);
+    if (a === "conta" || a === "minha conta") modoConta = true;
+    else if (a === "bot") modoConta = false;
+    else if (!a) modoConta = !modoConta;
+    else return botMsg(ctx.channelId, "Use `.trocar`, `.trocar conta` ou `.trocar bot`.");
+    await saveModo();
+    botMsg(
+      ctx.channelId,
+      modoConta
+        ? "🔁 Agora as respostas saem pela **sua conta** (todo mundo no chat vê)."
+        : "🔁 Agora as respostas saem pelo **bot** (só você vê)."
+    );
+  }
+
+  // ---- .criar tudo: monta cargos, categorias e canais a partir de um JSON ----
+  function esperar(ms) {
