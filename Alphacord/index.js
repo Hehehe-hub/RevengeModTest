@@ -14,12 +14,7 @@
     let RestAPI = null;
     let ChannelStore = null;
 
-    const sleep = ms =>
-        new Promise(resolve => setTimeout(resolve, ms));
-
-    function response(text) {
-        return text;
-    }
+    const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
     function getBody(result) {
         return result?.body ?? result;
@@ -37,7 +32,7 @@
 
     async function request(method, path, body) {
         if (!RestAPI) {
-            throw new Error("Módulo REST do Discord não encontrado.");
+            throw new Error("Módulo REST não encontrado.");
         }
 
         const fn = RestAPI[method];
@@ -46,16 +41,11 @@
             throw new Error("Método REST indisponível: " + method);
         }
 
-        const options = {
-            url: API + path
-        };
+        const options = { url: API + path };
 
-        if (body !== undefined) {
-            options.body = body;
-        }
+        if (body !== undefined) options.body = body;
 
-        const result = await fn.call(RestAPI, options);
-        return getBody(result);
+        return getBody(await fn.call(RestAPI, options));
     }
 
     function tokenize(input) {
@@ -72,66 +62,39 @@
         return result;
     }
 
-    function randomColor() {
-        return Math.floor(Math.random() * 16777215);
-    }
-
     function parseColor(value) {
         if (!value || value.toLowerCase() === "#random") {
-            return randomColor();
+            return Math.floor(Math.random() * 16777215);
         }
 
         if (!/^#[0-9a-f]{6}$/i.test(value)) {
-            throw new Error("Cor inválida. Use #RRGGBB ou #random.");
+            throw new Error("Use uma cor #RRGGBB ou #random.");
         }
 
         return parseInt(value.slice(1), 16);
     }
 
     const profiles = {
-        1: {
-            name: "Cosmético",
-            permissions: "0"
-        },
-        2: {
-            name: "Membro",
-            permissions: "67584"
-        },
-        3: {
-            name: "Staff",
-            permissions: "9216"
-        },
-        4: {
-            name: "ADM",
-            permissions: "8"
-        }
+        1: { name: "Cosmético", permissions: "0" },
+        2: { name: "Membro", permissions: "67584" },
+        3: { name: "Staff", permissions: "9216" },
+        4: { name: "ADM", permissions: "8" }
     };
 
     async function createCategory(guildId, name) {
-        return await request(
-            "post",
-            `/guilds/${guildId}/channels`,
-            {
-                name,
-                type: 4
-            }
-        );
+        return request("post", `/guilds/${guildId}/channels`, {
+            name,
+            type: 4
+        });
     }
 
     async function createChannel(guildId, name, categoryId, description) {
-        const body = {
-            name,
-            type: 0
-        };
+        const body = { name, type: 0 };
 
         if (categoryId) body.parent_id = categoryId;
         if (description) body.topic = description;
 
-        return await request(
-            "post",
-            `/guilds/${guildId}/channels`,
-            body
-        );
+        return request("post", `/guilds/${guildId}/channels`, body);
     }
 
     async function createRole(guildId, name, color, profile) {
@@ -141,15 +104,11 @@
             throw new Error("Perfil inválido. Use 1, 2, 3 ou 4.");
         }
 
-        return await request(
-            "post",
-            `/guilds/${guildId}/roles`,
-            {
-                name,
-                color,
-                permissions: selected.permissions
-            }
-        );
+        return request("post", `/guilds/${guildId}/roles`, {
+            name,
+            color,
+            permissions: selected.permissions
+        });
     }
 
     async function findChannel(guildId, name) {
@@ -159,8 +118,7 @@
         );
 
         return channels.find(
-            channel =>
-                channel.name.toLowerCase() === name.toLowerCase()
+            channel => channel.name.toLowerCase() === name.toLowerCase()
         );
     }
 
@@ -171,17 +129,14 @@
         );
 
         return roles.find(
-            role =>
-                role.name.toLowerCase() === name.toLowerCase()
+            role => role.name.toLowerCase() === name.toLowerCase()
         );
     }
 
     async function deleteChannel(guildId, name) {
         const channel = await findChannel(guildId, name);
 
-        if (!channel) {
-            throw new Error("Canal não encontrado: " + name);
-        }
+        if (!channel) throw new Error("Canal não encontrado: " + name);
 
         await request("del", `/channels/${channel.id}`);
     }
@@ -199,14 +154,9 @@
     async function deleteRole(guildId, name) {
         const role = await findRole(guildId, name);
 
-        if (!role) {
-            throw new Error("Cargo não encontrado: " + name);
-        }
+        if (!role) throw new Error("Cargo não encontrado: " + name);
 
-        await request(
-            "del",
-            `/guilds/${guildId}/roles/${role.id}`
-        );
+        await request("del", `/guilds/${guildId}/roles/${role.id}`);
     }
 
     function parseBatch(source) {
@@ -230,12 +180,7 @@
 
             if (categoryMatch) {
                 category = categoryMatch[1].trim();
-
-                items.push({
-                    type: "category",
-                    name: category
-                });
-
+                items.push({ type: "category", name: category });
                 continue;
             }
 
@@ -270,11 +215,7 @@
         for (const item of items) {
             if (item.type !== "category") continue;
 
-            const created = await createCategory(
-                guildId,
-                item.name
-            );
-
+            const created = await createCategory(guildId, item.name);
             categories[item.name] = created.id;
             createdCategories++;
 
@@ -318,7 +259,7 @@
             ".help\n" +
             ".wiki\n" +
             ".create\n" +
-            ".criar canal \"Nome\" Categoria \"Descrição\"\n" +
+            '.criar canal "Nome" "Categoria" "Descrição"\n' +
             ".deletar canal Nome\n" +
             ".criar categoria Nome\n" +
             ".deletar categoria Nome\n" +
@@ -333,26 +274,25 @@
     function wiki() {
         return (
             "# ALPHACORD WIKI\n\n" +
-            "## Gerenciamento de canais\n" +
-            "Use .criar canal para criar canais de texto.\n" +
-            "Use .deletar canal para excluir canais existentes.\n\n" +
+            "## Canais\n" +
+            "Use .criar canal e .deletar canal.\n\n" +
             "## Categorias\n" +
             "Use .criar categoria e .deletar categoria.\n\n" +
             "## Cargos\n" +
-            "Use .criar cargo com nome, cor e perfil.\n" +
-            "Use .deletar cargo para remover um cargo.\n\n" +
-            "## Criação em lote\n" +
-            "Use .create seguido de um bloco com categorias e canais.\n" +
-            "As descrições ficam entre aspas."
+            "Use .criar cargo com nome, cor e perfil.\n\n" +
+            "## Lote\n" +
+            "Use .create seguido de um bloco de categorias e canais."
         );
     }
 
     async function executeCommand(channelId, command) {
-        const guildId = getGuild(channelId);
         const text = command.trim();
 
+        // Ajuda e wiki não precisam consultar o servidor.
         if (text === ".help") return help();
         if (text === ".wiki") return wiki();
+
+        const guildId = getGuild(channelId);
 
         if (text.startsWith(".create")) {
             const source = text.slice(".create".length).trim();
@@ -361,10 +301,12 @@
                 throw new Error("Adicione a configuração depois de .create.");
             }
 
-            return await executeBatch(guildId, source);
+            return executeBatch(guildId, source);
         }
 
-        const match = text.match(/^\.criar\s+(canal|categoria|cargo)\s+([\s\S]+)$/i);
+        const match = text.match(
+            /^\.criar\s+(canal|categoria|cargo)\s+([\s\S]+)$/i
+        );
 
         if (match) {
             const type = match[1].toLowerCase();
@@ -373,8 +315,8 @@
             if (!args.length) throw new Error("Nome não informado.");
 
             if (type === "categoria") {
-                await createCategory(guildId, args[0]);
-                return "📁 Categoria criada: " + args[0];
+                await createCategory(guildId, args.join(" "));
+                return "📁 Categoria criada: " + args.join(" ");
             }
 
             if (type === "canal") {
@@ -413,7 +355,6 @@
                 const profile = Number(args[2] || 1);
 
                 await createRole(guildId, name, color, profile);
-
                 return "🏷️ Cargo criado: " + name;
             }
         }
@@ -455,17 +396,8 @@
     }
 
     function start() {
-        MessageActions = findByProps(
-            "sendMessage",
-            "editMessage"
-        );
-
-        RestAPI = findByProps(
-            "get",
-            "post",
-            "del"
-        );
-
+        MessageActions = findByProps("sendMessage", "editMessage");
+        RestAPI = findByProps("get", "post", "del");
         ChannelStore = findByProps("getChannel");
 
         if (!MessageActions?.sendMessage) {
@@ -480,9 +412,13 @@
             throw new Error("ChannelStore não encontrado.");
         }
 
+        logger.log("[Alphacord] Instalando interceptador...");
+
+        // ORDEM CORRETA DA API LEGADA DO VENDETTA:
+        // before(nomeDoMetodo, objeto, callback)
         unpatch = vendetta.patcher.before(
-            MessageActions,
             "sendMessage",
+            MessageActions,
             (_this, args) => {
                 const channelId = args[0];
                 const message = args[1];
@@ -509,6 +445,8 @@
                     };
                 }
 
+                logger.log("[Alphacord] Comando detectado:", command);
+
                 setTimeout(async () => {
                     try {
                         const result = await executeCommand(
@@ -530,7 +468,7 @@
             }
         );
 
-        logger.log("[Alphacord] Inicializado.");
+        logger.log("[Alphacord] Interceptador instalado!");
     }
 
     return {
