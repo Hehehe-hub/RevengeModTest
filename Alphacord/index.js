@@ -1,383 +1,510 @@
-(() => {
-const PLUGIN_NAME = "Alphacord";
 
-const DEFAULT_DATA = {
-    version: 1,
-    commands: [
-        "criar canal",
-        "deletar canal",
-        "criar cargo",
-        "deletar cargo",
-        "criar categoria",
-        "deletar categoria",
-        "help",
-        "wiki",
-        "create"
-    ],
-    presets: {
-        1: { name: "Cosmético", permissions: [] },
-        2: { name: "Membro", permissions: [] },
-        3: { name: "Staff", permissions: [] },
-        4: { name: "ADM", permissions: [] }
-    },
-    drafts: []
-};
+((vendetta) => {
+    const plugin = vendetta.plugin;
+    const logger = vendetta.logger;
 
-let data = DEFAULT_DATA;
-let storage;
-let stopped = false;
+    const commands = [];
+    const storage = plugin.storage;
 
-const randomColor = () =>
-    "#" + Math.floor(Math.random() * 16777215)
-        .toString(16).padStart(6, "0");
+    const DEFAULT_DATA = {
+        drafts: [],
+        categories: [],
+        channels: [],
+        roles: []
+    };
 
-function save() {
-    try {
-        if (storage?.set) storage.set(data);
-    } catch (e) {
-        console.error("[Alphacord] Storage:", e);
-    }
-}
-
-function reply(message) {
-    console.log(
-        "%c[Clyde] " + message,
-        "color:#5865F2;font-weight:bold"
-    );
-
-    try {
-        if (window.bunny?.api?.logger?.log) {
-            window.bunny.api.logger.log(message);
+    // Storage
+    Object.keys(DEFAULT_DATA).forEach(key => {
+        if (!Array.isArray(storage[key])) {
+            storage[key] = DEFAULT_DATA[key].slice();
         }
-    } catch (_) {}
-}
+    });
 
-function parseQuoted(text) {
-    const result = [];
-    const regex = /"((?:\\.|[^"\\])*)"/g;
-    let match;
-
-    while ((match = regex.exec(text)) !== null) {
-        result.push(match[1].replace(/\\"/g, '"'));
-    }
-
-    return result;
-}
-
-function parseCreate(source) {
-    const result = [];
-    const lines = source.split(/\r?\n/);
-
-    let category = null;
-
-    for (const raw of lines) {
-        const line = raw.trim();
-
-        if (!line || line === "{" || line === "}") continue;
-
-        const categoryMatch = line.match(/^categoria\s+(.+?)\s*\{$/i);
-
-        if (categoryMatch) {
-            category = categoryMatch[1].trim();
-            result.push({
-                type: "category",
-                name: category
-            });
-            continue;
-        }
-
-        const channelMatch = line.match(
-            /^canal\s+(.+?)(?:\s+"((?:\\.|[^"\\])*)")?$/i
-        );
-
-        if (channelMatch) {
-            result.push({
-                type: "channel",
-                name: channelMatch[1].trim(),
-                category,
-                description: channelMatch[2] || ""
-            });
+    function save() {
+        try {
+            Object.keys(storage).forEach(() => {});
+        } catch (e) {
+            logger.error("[Alphacord] Storage error:", e);
         }
     }
 
-    return result;
-}
-
-function validateCreate(items) {
-    if (!items.length) {
-        throw new Error("Nenhuma categoria ou canal encontrado.");
+    // Helpers
+    function arg(args, name, fallback = "") {
+        const item = (args || []).find(x => x.name === name);
+        return item?.value ?? fallback;
     }
 
-    const names = new Set();
-
-    for (const item of items) {
-        if (!item.name) {
-            throw new Error("Foi encontrado um nome vazio.");
-        }
-
-        const key = item.type + ":" + item.name.toLowerCase();
-
-        if (names.has(key)) {
-            throw new Error("Nome duplicado: " + item.name);
-        }
-
-        names.add(key);
+    function randomColor() {
+        return "#" + Math.floor(Math.random() * 16777215)
+            .toString(16).padStart(6, "0");
     }
 
-    return true;
-}
+    function validColor(color) {
+        return /^#[0-9a-fA-F]{6}$/.test(color);
+    }
 
-function executeCreate(source) {
-    try {
-        const items = parseCreate(source);
+    function record(operation, details) {
+        const entry = {
+            operation,
+            details,
+            createdAt: new Date().toISOString()
+        };
 
-        validateCreate(items);
-
-        data.drafts.push({
-            date: new Date().toISOString(),
-            items
-        });
-
+        storage.drafts.push(entry);
         save();
 
-        const categories = items.filter(
-            item => item.type === "category"
-        ).length;
-
-        const channels = items.filter(
-            item => item.type === "channel"
-        ).length;
-
-        reply(
-            "Configuração interpretada!\n" +
-            "Categorias: " + categories + "\n" +
-            "Canais: " + channels + "\n\n" +
-            "Esta versão guarda o projeto localmente. " +
-            "Ainda não cria os elementos no servidor."
-        );
-
-    } catch (error) {
-        reply("Erro: " + error.message);
+        return entry;
     }
-}
 
-function help() {
-    reply(
-`📚 ALPHACORD
+    function response(text) {
+        return { content: text };
+    }
 
-COMANDOS DISPONÍVEIS
+    // Create parser
+    function parseCreate(source) {
+        const lines = source.split(/\r?\n/);
+        const result = [];
+        let currentCategory = null;
 
-.criar canal {nome}
-.deletar canal {nome}
+        for (let raw of lines) {
+            const line = raw.trim();
 
-.criar categoria {nome}
-.deletar categoria {nome}
+            if (!line || line === "{" || line === "}") {
+                if (line === "}") currentCategory = null;
+                continue;
+            }
 
-.criar cargo {nome} {cor} {permissão}
-.deletar cargo {nome}
+            const categoryMatch = line.match(
+                /^categoria\s+(.+?)\s*\{$/i
+            );
+
+            if (categoryMatch) {
+                currentCategory = categoryMatch[1].trim();
+
+                result.push({
+                    type: "category",
+                    name: currentCategory
+                });
+
+                continue;
+            }
+
+            const channelMatch = line.match(
+                /^canal\s+(.+?)(?:\s+"((?:\\.|[^"\\])*)")?$/i
+            );
+
+            if (channelMatch) {
+                result.push({
+                    type: "channel",
+                    name: channelMatch[1].trim(),
+                    category: currentCategory,
+                    description: (channelMatch[2] || "")
+                        .replace(/\\"/g, '"')
+                });
+            }
+        }
+
+        return result;
+    }
+
+    function validateCreate(items) {
+        if (!items.length) {
+            throw new Error("Nenhum elemento encontrado.");
+        }
+
+        const names = new Set();
+
+        for (const item of items) {
+            if (!item.name) {
+                throw new Error("Nome vazio encontrado.");
+            }
+
+            const key = item.type + ":" +
+                item.name.toLowerCase();
+
+            if (names.has(key)) {
+                throw new Error("Elemento duplicado: " + item.name);
+            }
+
+            names.add(key);
+        }
+    }
+
+    function executeCreate(source) {
+        try {
+            const items = parseCreate(source);
+
+            validateCreate(items);
+
+            record("create-batch", items);
+
+            const categories = items.filter(
+                x => x.type === "category"
+            ).length;
+
+            const channels = items.filter(
+                x => x.type === "channel"
+            ).length;
+
+            return response(
+                "🥶 ALPHACORD | Clyde\n\n" +
+                "Configuração interpretada com sucesso!\n\n" +
+                "Categorias: " + categories + "\n" +
+                "Canais: " + channels + "\n\n" +
+                "Elementos preparados e salvos localmente."
+            );
+
+        } catch (error) {
+            return response(
+                "❌ Erro de configuração:\n" + error.message
+            );
+        }
+    }
+
+    // Help
+    function help() {
+        return response(
+`📚 ALPHACORD | COMANDOS
 
 .help
 .wiki
+
 .create
+.criar-canal
+.deletar-canal
+.criar-categoria
+.deletar-categoria
+.criar-cargo
+.deletar-cargo
 
-Cor especial: #random
+CORES:
+#random = cor aleatória
 
-Permissões:
+PERFIS:
 1 = Cosmético
 2 = Membro
 3 = Staff
-4 = ADM`
-    );
-}
+4 = ADM
 
-function wiki() {
-    reply(
+Use o comando para consultar suas opções.`
+        );
+    }
+
+    // Wiki
+    function wiki() {
+        return response(
 `# ALPHACORD WIKI
 
 ## 1. Introdução
 
 Alphacord é um sistema de organização
-e administração de servidores Discord.
+de servidores Discord.
 
-## 2. Canais
+Esta edição possui um sistema local de
+interpretação e armazenamento de projetos.
 
-.criar canal {nome}
+## 2. Gerenciamento de canais
 
-Recebe o nome do canal que deseja criar.
+### Criar canal
 
-.deletar canal {nome}
+/criar-canal
 
-Recebe o nome do canal que deseja excluir.
+Parâmetros:
+- nome: nome do canal.
+- categoria: categoria desejada.
+- descrição: descrição do canal.
+
+### Deletar canal
+
+/deletar-canal
+
+Parâmetros:
+- nome: nome do canal.
 
 ## 3. Categorias
 
-.criar categoria {nome}
+/criar-categoria
+/deletar-categoria
 
-Define uma categoria.
-
-.deletar categoria {nome}
-
-Remove uma categoria.
+Recebem o nome da categoria.
 
 ## 4. Cargos
 
-.criar cargo {nome} {cor} {nível}
+/criar-cargo
 
-A cor pode ser hexadecimal ou #random.
+Parâmetros:
+- nome: nome do cargo.
+- cor: cor hexadecimal.
+- perfil: nível de permissões desejado.
 
-Níveis:
+### Perfis disponíveis
+
 1. Cosmético
 2. Membro
 3. Staff
 4. ADM
 
+Os perfis são identificadores locais nesta edição.
+
 ## 5. Criador em lote
 
-.create
+/create
 
-Permite interpretar várias categorias e canais
-em uma única estrutura.
+Aceita uma configuração contendo categorias
+e canais.
 
-Descrições devem ficar entre aspas.
+Exemplo:
 
-## 6. Ajuda
-
-.help
-
-Exibe a lista resumida dos comandos.
-
-## 7. Persistência
-
-Os projetos interpretados são armazenados
-no armazenamento local do plugin.`
-    );
+categoria Comunidade {
+  canal Chat "Converse aqui!"
+  canal Memes "Envie memes!"
 }
 
-function processCommand(input) {
-    if (stopped || typeof input !== "string") return false;
+Descrições são colocadas entre aspas.
 
-    const text = input.trim();
+## 6. Persistência
 
-    if (!text.startsWith(".")) return false;
+As configurações são guardadas no armazenamento
+do plugin e não desaparecem quando um comando
+é executado.
 
-    const command = text.slice(1).trim();
+## 7. Ajuda
 
-    if (command === "help") {
-        help();
-        return true;
+/help
+
+Exibe a lista resumida dos comandos.`
+        );
     }
 
-    if (command === "wiki") {
-        wiki();
-        return true;
-    }
-
-    if (command.startsWith("create")) {
-        reply("Use o interpretador executeCreate() com o bloco de configuração.");
-        return true;
-    }
-
-    if (command.startsWith("criar cargo ")) {
-        const args = command.slice(12).trim().split(/\s+/);
-        const name = args.shift();
-        const color = args.shift() || "#random";
-        const level = Number(args.shift() || 1);
-
-        if (!name || !data.presets[level]) {
-            reply("Sintaxe inválida. Nível permitido: 1, 2, 3 ou 4.");
-            return true;
-        }
-
-        const role = {
+    // Command builder
+    function register(name, description, options, execute) {
+        const command = {
             name,
-            color: color === "#random" ? randomColor() : color,
-            preset: level,
-            permissions: data.presets[level].permissions
+            displayName: name,
+            description,
+            displayDescription: description,
+            applicationId: "-1",
+            inputType: 1,
+            type: 1,
+            options: options || [],
+            execute
         };
 
-        data.drafts.push({ type: "role", ...role });
-        save();
+        const unregister =
+            vendetta.commands.registerCommand(command);
 
-        reply(
-            "Cargo preparado: " + name +
-            "\nCor: " + role.color +
-            "\nPerfil: " + data.presets[level].name +
-            "\nAinda não criado no servidor."
+        if (typeof unregister === "function") {
+            commands.push(unregister);
+        }
+    }
+
+    const STRING = 3;
+
+    function option(name, description, required = true) {
+        return {
+            name,
+            displayName: name,
+            description,
+            displayDescription: description,
+            type: STRING,
+            required
+        };
+    }
+
+    // Commands
+    function registerAll() {
+
+        register(
+            "help",
+            "Exibe todos os comandos Alphacord.",
+            [],
+            () => help()
         );
 
-        return true;
-    }
+        register(
+            "wiki",
+            "Manual detalhado do Alphacord.",
+            [],
+            () => wiki()
+        );
 
-    const operations = [
-        "criar canal",
-        "deletar canal",
-        "criar categoria",
-        "deletar categoria",
-        "deletar cargo"
-    ];
+        register(
+            "create",
+            "Interpreta uma configuração em lote.",
+            [option("config", "Configuração completa.")],
+            args => executeCreate(arg(args, "config"))
+        );
 
-    for (const operation of operations) {
-        if (command.startsWith(operation + " ")) {
-            const name = command.slice(operation.length).trim();
-
-            if (!name) {
-                reply("Informe um nome.");
-                return true;
-            }
-
-            data.drafts.push({
-                operation,
-                name,
-                date: new Date().toISOString()
-            });
-
-            save();
-
-            reply(
-                "Operação registrada localmente: " +
-                operation + " → " + name +
-                "\nAinda não executada no servidor."
-            );
-
-            return true;
-        }
-    }
-
-    return false;
-}
-
-function onLoad() {
-    stopped = false;
-
-    try {
-        storage = window.bunny?.plugin?.createStorage?.();
-
-        if (storage?.get) {
-            const saved = storage.get();
-
-            if (saved && typeof saved === "object") {
-                data = {
-                    ...DEFAULT_DATA,
-                    ...saved
+        register(
+            "criar-canal",
+            "Prepara a criação de um canal.",
+            [
+                option("nome", "Nome do canal."),
+                option("categoria", "Categoria do canal.", false),
+                option("descricao", "Descrição do canal.", false)
+            ],
+            args => {
+                const details = {
+                    name: arg(args, "nome"),
+                    category: arg(args, "categoria"),
+                    description: arg(args, "descricao")
                 };
+
+                if (!details.name) {
+                    return response("Informe o nome do canal.");
+                }
+
+                record("create-channel", details);
+
+                return response(
+                    "📁 Canal preparado: " + details.name +
+                    "\nCategoria: " + (details.category || "Nenhuma") +
+                    "\nDescrição: " + (details.description || "Nenhuma") +
+                    "\n\nSalvo localmente."
+                );
             }
-        }
-    } catch (e) {
-        console.log("[Alphacord] Storage indisponível:", e);
+        );
+
+        register(
+            "deletar-canal",
+            "Prepara a exclusão de um canal.",
+            [option("nome", "Nome do canal.")],
+            args => {
+                const name = arg(args, "nome");
+
+                if (!name) return response("Informe o nome.");
+
+                record("delete-channel", { name });
+
+                return response(
+                    "Canal marcado para exclusão: " + name
+                );
+            }
+        );
+
+        register(
+            "criar-categoria",
+            "Prepara a criação de uma categoria.",
+            [option("nome", "Nome da categoria.")],
+            args => {
+                const name = arg(args, "nome");
+
+                if (!name) return response("Informe o nome.");
+
+                record("create-category", { name });
+
+                return response(
+                    "Categoria preparada: " + name
+                );
+            }
+        );
+
+        register(
+            "deletar-categoria",
+            "Prepara a exclusão de uma categoria.",
+            [option("nome", "Nome da categoria.")],
+            args => {
+                const name = arg(args, "nome");
+
+                if (!name) return response("Informe o nome.");
+
+                record("delete-category", { name });
+
+                return response(
+                    "Categoria marcada para exclusão: " + name
+                );
+            }
+        );
+
+        register(
+            "criar-cargo",
+            "Prepara um cargo com cor e perfil.",
+            [
+                option("nome", "Nome do cargo."),
+                option("cor", "Hexadecimal ou #random.", false),
+                option("perfil", "1, 2, 3 ou 4.", false)
+            ],
+            args => {
+                const name = arg(args, "nome");
+                let color = arg(args, "cor", "#random");
+                const profile = Number(arg(args, "perfil", "1"));
+
+                if (!name) return response("Informe o nome.");
+
+                if (color.toLowerCase() === "#random") {
+                    color = randomColor();
+                }
+
+                if (!validColor(color)) {
+                    return response(
+                        "Cor inválida. Use #RRGGBB ou #random."
+                    );
+                }
+
+                const profiles = {
+                    1: "Cosmético",
+                    2: "Membro",
+                    3: "Staff",
+                    4: "ADM"
+                };
+
+                if (!profiles[profile]) {
+                    return response("Perfil inválido. Use 1 a 4.");
+                }
+
+                record("create-role", {
+                    name,
+                    color,
+                    profile,
+                    profileName: profiles[profile]
+                });
+
+                return response(
+                    "🏷️ Cargo preparado: " + name +
+                    "\nCor: " + color +
+                    "\nPerfil: " + profiles[profile] +
+                    "\n\nSalvo localmente."
+                );
+            }
+        );
+
+        register(
+            "deletar-cargo",
+            "Prepara a exclusão de um cargo.",
+            [option("nome", "Nome do cargo.")],
+            args => {
+                const name = arg(args, "nome");
+
+                if (!name) return response("Informe o nome.");
+
+                record("delete-role", { name });
+
+                return response(
+                    "Cargo marcado para exclusão: " + name
+                );
+            }
+        );
     }
 
-    console.log("[Alphacord] Carregado.");
-    console.log("[Alphacord] Comandos:", data.commands);
-}
+    return {
+        onLoad() {
+            try {
+                registerAll();
+                logger.log("[Alphacord] Plugin carregado!");
+                logger.log("[Alphacord] 9 comandos registrados.");
+            } catch (error) {
+                logger.error("[Alphacord] Falha:", error);
+            }
+        },
 
-function onUnload() {
-    stopped = true;
-    save();
-    console.log("[Alphacord] Descarregado.");
-}
+        onUnload() {
+            while (commands.length) {
+                try {
+                    commands.pop()();
+                } catch (_) {}
+            }
 
-return {
-    onLoad,
-    onUnload
-};
-})();
+            logger.log("[Alphacord] Plugin descarregado.");
+        }
+    };
+})(vendetta)
