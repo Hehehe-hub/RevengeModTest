@@ -1,76 +1,226 @@
 
 ((vendetta) => {
-    const plugin = vendetta.plugin;
-    const logger = vendetta.logger;
+    const { logger } = vendetta;
+    const { findByProps } = vendetta.metro;
 
-    const commands = [];
-    const storage = plugin.storage;
+    const PREFIX = ".";
+    const API = "https://discord.com/api/v10";
 
-    const DEFAULT_DATA = {
-        drafts: [],
-        categories: [],
-        channels: [],
-        roles: []
-    };
+    const CLYDE =
+        "OK, GRANDIOSO MESTRE FARMADOR DE AURA DESTRUIDOR DE UNIVERSOS QUE NÃO ENTENDE PORRA NENHUMA DE KOTLIN";
 
-    // Storage
-    Object.keys(DEFAULT_DATA).forEach(key => {
-        if (!Array.isArray(storage[key])) {
-            storage[key] = DEFAULT_DATA[key].slice();
-        }
-    });
+    let unpatch = null;
+    let MessageActions = null;
+    let RestAPI = null;
+    let ChannelStore = null;
 
-    function save() {
-        try {
-            Object.keys(storage).forEach(() => {});
-        } catch (e) {
-            logger.error("[Alphacord] Storage error:", e);
-        }
+    const sleep = ms =>
+        new Promise(resolve => setTimeout(resolve, ms));
+
+    function response(text) {
+        return text;
     }
 
-    // Helpers
-    function arg(args, name, fallback = "") {
-        const item = (args || []).find(x => x.name === name);
-        return item?.value ?? fallback;
+    function getBody(result) {
+        return result?.body ?? result;
+    }
+
+    function getGuild(channelId) {
+        const channel = ChannelStore?.getChannel?.(channelId);
+
+        if (!channel?.guild_id) {
+            throw new Error("Não consegui identificar o servidor deste canal.");
+        }
+
+        return channel.guild_id;
+    }
+
+    async function request(method, path, body) {
+        if (!RestAPI) {
+            throw new Error("Módulo REST do Discord não encontrado.");
+        }
+
+        const fn = RestAPI[method];
+
+        if (typeof fn !== "function") {
+            throw new Error("Método REST indisponível: " + method);
+        }
+
+        const options = {
+            url: API + path
+        };
+
+        if (body !== undefined) {
+            options.body = body;
+        }
+
+        const result = await fn.call(RestAPI, options);
+        return getBody(result);
+    }
+
+    function tokenize(input) {
+        const result = [];
+        const regex = /"((?:\\.|[^"\\])*)"|(\S+)/g;
+        let match;
+
+        while ((match = regex.exec(input)) !== null) {
+            result.push(
+                (match[1] ?? match[2]).replace(/\\"/g, '"')
+            );
+        }
+
+        return result;
     }
 
     function randomColor() {
-        return "#" + Math.floor(Math.random() * 16777215)
-            .toString(16).padStart(6, "0");
+        return Math.floor(Math.random() * 16777215);
     }
 
-    function validColor(color) {
-        return /^#[0-9a-fA-F]{6}$/.test(color);
+    function parseColor(value) {
+        if (!value || value.toLowerCase() === "#random") {
+            return randomColor();
+        }
+
+        if (!/^#[0-9a-f]{6}$/i.test(value)) {
+            throw new Error("Cor inválida. Use #RRGGBB ou #random.");
+        }
+
+        return parseInt(value.slice(1), 16);
     }
 
-    function record(operation, details) {
-        const entry = {
-            operation,
-            details,
-            createdAt: new Date().toISOString()
+    const profiles = {
+        1: {
+            name: "Cosmético",
+            permissions: "0"
+        },
+        2: {
+            name: "Membro",
+            permissions: "67584"
+        },
+        3: {
+            name: "Staff",
+            permissions: "9216"
+        },
+        4: {
+            name: "ADM",
+            permissions: "8"
+        }
+    };
+
+    async function createCategory(guildId, name) {
+        return await request(
+            "post",
+            `/guilds/${guildId}/channels`,
+            {
+                name,
+                type: 4
+            }
+        );
+    }
+
+    async function createChannel(guildId, name, categoryId, description) {
+        const body = {
+            name,
+            type: 0
         };
 
-        storage.drafts.push(entry);
-        save();
+        if (categoryId) body.parent_id = categoryId;
+        if (description) body.topic = description;
 
-        return entry;
+        return await request(
+            "post",
+            `/guilds/${guildId}/channels`,
+            body
+        );
     }
 
-    function response(text) {
-        return { content: text };
+    async function createRole(guildId, name, color, profile) {
+        const selected = profiles[profile];
+
+        if (!selected) {
+            throw new Error("Perfil inválido. Use 1, 2, 3 ou 4.");
+        }
+
+        return await request(
+            "post",
+            `/guilds/${guildId}/roles`,
+            {
+                name,
+                color,
+                permissions: selected.permissions
+            }
+        );
     }
 
-    // Create parser
-    function parseCreate(source) {
+    async function findChannel(guildId, name) {
+        const channels = await request(
+            "get",
+            `/guilds/${guildId}/channels`
+        );
+
+        return channels.find(
+            channel =>
+                channel.name.toLowerCase() === name.toLowerCase()
+        );
+    }
+
+    async function findRole(guildId, name) {
+        const roles = await request(
+            "get",
+            `/guilds/${guildId}/roles`
+        );
+
+        return roles.find(
+            role =>
+                role.name.toLowerCase() === name.toLowerCase()
+        );
+    }
+
+    async function deleteChannel(guildId, name) {
+        const channel = await findChannel(guildId, name);
+
+        if (!channel) {
+            throw new Error("Canal não encontrado: " + name);
+        }
+
+        await request("del", `/channels/${channel.id}`);
+    }
+
+    async function deleteCategory(guildId, name) {
+        const channel = await findChannel(guildId, name);
+
+        if (!channel || channel.type !== 4) {
+            throw new Error("Categoria não encontrada: " + name);
+        }
+
+        await request("del", `/channels/${channel.id}`);
+    }
+
+    async function deleteRole(guildId, name) {
+        const role = await findRole(guildId, name);
+
+        if (!role) {
+            throw new Error("Cargo não encontrado: " + name);
+        }
+
+        await request(
+            "del",
+            `/guilds/${guildId}/roles/${role.id}`
+        );
+    }
+
+    function parseBatch(source) {
+        const items = [];
         const lines = source.split(/\r?\n/);
-        const result = [];
-        let currentCategory = null;
+        let category = null;
 
-        for (let raw of lines) {
+        for (const raw of lines) {
             const line = raw.trim();
 
-            if (!line || line === "{" || line === "}") {
-                if (line === "}") currentCategory = null;
+            if (!line || line === "{") continue;
+
+            if (line === "}") {
+                category = null;
                 continue;
             }
 
@@ -79,11 +229,11 @@
             );
 
             if (categoryMatch) {
-                currentCategory = categoryMatch[1].trim();
+                category = categoryMatch[1].trim();
 
-                result.push({
+                items.push({
                     type: "category",
-                    name: currentCategory
+                    name: category
                 });
 
                 continue;
@@ -94,417 +244,311 @@
             );
 
             if (channelMatch) {
-                result.push({
+                items.push({
                     type: "channel",
                     name: channelMatch[1].trim(),
-                    category: currentCategory,
+                    category,
                     description: (channelMatch[2] || "")
                         .replace(/\\"/g, '"')
                 });
             }
         }
 
-        return result;
-    }
-
-    function validateCreate(items) {
         if (!items.length) {
-            throw new Error("Nenhum elemento encontrado.");
+            throw new Error("Nenhuma categoria ou canal encontrado.");
         }
 
-        const names = new Set();
+        return items;
+    }
+
+    async function executeBatch(guildId, source) {
+        const items = parseBatch(source);
+        const categories = {};
+        let createdCategories = 0;
+        let createdChannels = 0;
 
         for (const item of items) {
-            if (!item.name) {
-                throw new Error("Nome vazio encontrado.");
-            }
+            if (item.type !== "category") continue;
 
-            const key = item.type + ":" +
-                item.name.toLowerCase();
-
-            if (names.has(key)) {
-                throw new Error("Elemento duplicado: " + item.name);
-            }
-
-            names.add(key);
-        }
-    }
-
-    function executeCreate(source) {
-        try {
-            const items = parseCreate(source);
-
-            validateCreate(items);
-
-            record("create-batch", items);
-
-            const categories = items.filter(
-                x => x.type === "category"
-            ).length;
-
-            const channels = items.filter(
-                x => x.type === "channel"
-            ).length;
-
-            return response(
-                "🥶 ALPHACORD | Clyde\n\n" +
-                "Configuração interpretada com sucesso!\n\n" +
-                "Categorias: " + categories + "\n" +
-                "Canais: " + channels + "\n\n" +
-                "Elementos preparados e salvos localmente."
+            const created = await createCategory(
+                guildId,
+                item.name
             );
 
-        } catch (error) {
-            return response(
-                "❌ Erro de configuração:\n" + error.message
-            );
+            categories[item.name] = created.id;
+            createdCategories++;
+
+            await sleep(250);
         }
+
+        for (const item of items) {
+            if (item.type !== "channel") continue;
+
+            const parentId = item.category
+                ? categories[item.category]
+                : null;
+
+            if (item.category && !parentId) {
+                throw new Error(
+                    "Categoria não encontrada no lote: " + item.category
+                );
+            }
+
+            await createChannel(
+                guildId,
+                item.name,
+                parentId,
+                item.description
+            );
+
+            createdChannels++;
+            await sleep(250);
+        }
+
+        return (
+            "✅ Lote concluído!\n\n" +
+            "Categorias criadas: " + createdCategories + "\n" +
+            "Canais criados: " + createdChannels
+        );
     }
 
-    // Help
     function help() {
-        return response(
-`📚 ALPHACORD | COMANDOS
-
-.help
-.wiki
-
-.create
-.criar-canal
-.deletar-canal
-.criar-categoria
-.deletar-categoria
-.criar-cargo
-.deletar-cargo
-
-CORES:
-#random = cor aleatória
-
-PERFIS:
-1 = Cosmético
-2 = Membro
-3 = Staff
-4 = ADM
-
-Use o comando para consultar suas opções.`
+        return (
+            "📚 ALPHACORD | COMANDOS\n\n" +
+            ".help\n" +
+            ".wiki\n" +
+            ".create\n" +
+            ".criar canal \"Nome\" Categoria \"Descrição\"\n" +
+            ".deletar canal Nome\n" +
+            ".criar categoria Nome\n" +
+            ".deletar categoria Nome\n" +
+            ".criar cargo Nome #random 1\n" +
+            ".deletar cargo Nome\n\n" +
+            "Perfis de cargo:\n" +
+            "1 Cosmético\n2 Membro\n3 Staff\n4 ADM\n\n" +
+            "#random = cor aleatória"
         );
     }
 
-    // Wiki
     function wiki() {
-        return response(
-`# ALPHACORD WIKI
-
-## 1. Introdução
-
-Alphacord é um sistema de organização
-de servidores Discord.
-
-Esta edição possui um sistema local de
-interpretação e armazenamento de projetos.
-
-## 2. Gerenciamento de canais
-
-### Criar canal
-
-/criar-canal
-
-Parâmetros:
-- nome: nome do canal.
-- categoria: categoria desejada.
-- descrição: descrição do canal.
-
-### Deletar canal
-
-/deletar-canal
-
-Parâmetros:
-- nome: nome do canal.
-
-## 3. Categorias
-
-/criar-categoria
-/deletar-categoria
-
-Recebem o nome da categoria.
-
-## 4. Cargos
-
-/criar-cargo
-
-Parâmetros:
-- nome: nome do cargo.
-- cor: cor hexadecimal.
-- perfil: nível de permissões desejado.
-
-### Perfis disponíveis
-
-1. Cosmético
-2. Membro
-3. Staff
-4. ADM
-
-Os perfis são identificadores locais nesta edição.
-
-## 5. Criador em lote
-
-/create
-
-Aceita uma configuração contendo categorias
-e canais.
-
-Exemplo:
-
-categoria Comunidade {
-  canal Chat "Converse aqui!"
-  canal Memes "Envie memes!"
-}
-
-Descrições são colocadas entre aspas.
-
-## 6. Persistência
-
-As configurações são guardadas no armazenamento
-do plugin e não desaparecem quando um comando
-é executado.
-
-## 7. Ajuda
-
-/help
-
-Exibe a lista resumida dos comandos.`
+        return (
+            "# ALPHACORD WIKI\n\n" +
+            "## Gerenciamento de canais\n" +
+            "Use .criar canal para criar canais de texto.\n" +
+            "Use .deletar canal para excluir canais existentes.\n\n" +
+            "## Categorias\n" +
+            "Use .criar categoria e .deletar categoria.\n\n" +
+            "## Cargos\n" +
+            "Use .criar cargo com nome, cor e perfil.\n" +
+            "Use .deletar cargo para remover um cargo.\n\n" +
+            "## Criação em lote\n" +
+            "Use .create seguido de um bloco com categorias e canais.\n" +
+            "As descrições ficam entre aspas."
         );
     }
 
-    // Command builder
-    function register(name, description, options, execute) {
-        const command = {
-            name,
-            displayName: name,
-            description,
-            displayDescription: description,
-            applicationId: "-1",
-            inputType: 1,
-            type: 1,
-            options: options || [],
-            execute
-        };
+    async function executeCommand(channelId, command) {
+        const guildId = getGuild(channelId);
+        const text = command.trim();
 
-        const unregister =
-            vendetta.commands.registerCommand(command);
+        if (text === ".help") return help();
+        if (text === ".wiki") return wiki();
 
-        if (typeof unregister === "function") {
-            commands.push(unregister);
+        if (text.startsWith(".create")) {
+            const source = text.slice(".create".length).trim();
+
+            if (!source) {
+                throw new Error("Adicione a configuração depois de .create.");
+            }
+
+            return await executeBatch(guildId, source);
         }
-    }
 
-    const STRING = 3;
+        const match = text.match(/^\.criar\s+(canal|categoria|cargo)\s+([\s\S]+)$/i);
 
-    function option(name, description, required = true) {
-        return {
-            name,
-            displayName: name,
-            description,
-            displayDescription: description,
-            type: STRING,
-            required
-        };
-    }
+        if (match) {
+            const type = match[1].toLowerCase();
+            const args = tokenize(match[2]);
 
-    // Commands
-    function registerAll() {
+            if (!args.length) throw new Error("Nome não informado.");
 
-        register(
-            "help",
-            "Exibe todos os comandos Alphacord.",
-            [],
-            () => help()
-        );
-
-        register(
-            "wiki",
-            "Manual detalhado do Alphacord.",
-            [],
-            () => wiki()
-        );
-
-        register(
-            "create",
-            "Interpreta uma configuração em lote.",
-            [option("config", "Configuração completa.")],
-            args => executeCreate(arg(args, "config"))
-        );
-
-        register(
-            "criar-canal",
-            "Prepara a criação de um canal.",
-            [
-                option("nome", "Nome do canal."),
-                option("categoria", "Categoria do canal.", false),
-                option("descricao", "Descrição do canal.", false)
-            ],
-            args => {
-                const details = {
-                    name: arg(args, "nome"),
-                    category: arg(args, "categoria"),
-                    description: arg(args, "descricao")
-                };
-
-                if (!details.name) {
-                    return response("Informe o nome do canal.");
-                }
-
-                record("create-channel", details);
-
-                return response(
-                    "📁 Canal preparado: " + details.name +
-                    "\nCategoria: " + (details.category || "Nenhuma") +
-                    "\nDescrição: " + (details.description || "Nenhuma") +
-                    "\n\nSalvo localmente."
-                );
+            if (type === "categoria") {
+                await createCategory(guildId, args[0]);
+                return "📁 Categoria criada: " + args[0];
             }
-        );
 
-        register(
-            "deletar-canal",
-            "Prepara a exclusão de um canal.",
-            [option("nome", "Nome do canal.")],
-            args => {
-                const name = arg(args, "nome");
+            if (type === "canal") {
+                const name = args[0];
+                const categoryName = args[1] || "";
+                const description = args.slice(2).join(" ");
 
-                if (!name) return response("Informe o nome.");
+                let parentId = null;
 
-                record("delete-channel", { name });
-
-                return response(
-                    "Canal marcado para exclusão: " + name
-                );
-            }
-        );
-
-        register(
-            "criar-categoria",
-            "Prepara a criação de uma categoria.",
-            [option("nome", "Nome da categoria.")],
-            args => {
-                const name = arg(args, "nome");
-
-                if (!name) return response("Informe o nome.");
-
-                record("create-category", { name });
-
-                return response(
-                    "Categoria preparada: " + name
-                );
-            }
-        );
-
-        register(
-            "deletar-categoria",
-            "Prepara a exclusão de uma categoria.",
-            [option("nome", "Nome da categoria.")],
-            args => {
-                const name = arg(args, "nome");
-
-                if (!name) return response("Informe o nome.");
-
-                record("delete-category", { name });
-
-                return response(
-                    "Categoria marcada para exclusão: " + name
-                );
-            }
-        );
-
-        register(
-            "criar-cargo",
-            "Prepara um cargo com cor e perfil.",
-            [
-                option("nome", "Nome do cargo."),
-                option("cor", "Hexadecimal ou #random.", false),
-                option("perfil", "1, 2, 3 ou 4.", false)
-            ],
-            args => {
-                const name = arg(args, "nome");
-                let color = arg(args, "cor", "#random");
-                const profile = Number(arg(args, "perfil", "1"));
-
-                if (!name) return response("Informe o nome.");
-
-                if (color.toLowerCase() === "#random") {
-                    color = randomColor();
-                }
-
-                if (!validColor(color)) {
-                    return response(
-                        "Cor inválida. Use #RRGGBB ou #random."
+                if (categoryName) {
+                    const category = await findChannel(
+                        guildId,
+                        categoryName
                     );
+
+                    if (!category || category.type !== 4) {
+                        throw new Error("Categoria não encontrada.");
+                    }
+
+                    parentId = category.id;
                 }
 
-                const profiles = {
-                    1: "Cosmético",
-                    2: "Membro",
-                    3: "Staff",
-                    4: "ADM"
-                };
-
-                if (!profiles[profile]) {
-                    return response("Perfil inválido. Use 1 a 4.");
-                }
-
-                record("create-role", {
+                await createChannel(
+                    guildId,
                     name,
-                    color,
-                    profile,
-                    profileName: profiles[profile]
-                });
-
-                return response(
-                    "🏷️ Cargo preparado: " + name +
-                    "\nCor: " + color +
-                    "\nPerfil: " + profiles[profile] +
-                    "\n\nSalvo localmente."
+                    parentId,
+                    description
                 );
+
+                return "📁 Canal criado: " + name;
+            }
+
+            if (type === "cargo") {
+                const name = args[0];
+                const color = parseColor(args[1]);
+                const profile = Number(args[2] || 1);
+
+                await createRole(guildId, name, color, profile);
+
+                return "🏷️ Cargo criado: " + name;
+            }
+        }
+
+        const remove = text.match(
+            /^\.deletar\s+(canal|categoria|cargo)\s+(.+)$/i
+        );
+
+        if (remove) {
+            const type = remove[1].toLowerCase();
+            const name = remove[2].trim();
+
+            if (type === "canal") {
+                await deleteChannel(guildId, name);
+            } else if (type === "categoria") {
+                await deleteCategory(guildId, name);
+            } else {
+                await deleteRole(guildId, name);
+            }
+
+            return "🗑️ Removido: " + name;
+        }
+
+        throw new Error("Comando desconhecido. Digite .help.");
+    }
+
+    async function sendResult(channelId, content) {
+        return MessageActions.sendMessage(
+            channelId,
+            {
+                content,
+                tts: false,
+                invalidEmojis: [],
+                validNonShortcutEmojis: []
+            },
+            true,
+            {}
+        );
+    }
+
+    function start() {
+        MessageActions = findByProps(
+            "sendMessage",
+            "editMessage"
+        );
+
+        RestAPI = findByProps(
+            "get",
+            "post",
+            "del"
+        );
+
+        ChannelStore = findByProps("getChannel");
+
+        if (!MessageActions?.sendMessage) {
+            throw new Error("MessageActions não encontrado.");
+        }
+
+        if (!RestAPI?.post || !RestAPI?.get || !RestAPI?.del) {
+            throw new Error("RestAPI não encontrado ou incompleto.");
+        }
+
+        if (!ChannelStore?.getChannel) {
+            throw new Error("ChannelStore não encontrado.");
+        }
+
+        unpatch = vendetta.patcher.before(
+            MessageActions,
+            "sendMessage",
+            (_this, args) => {
+                const channelId = args[0];
+                const message = args[1];
+
+                const content = typeof message === "string"
+                    ? message
+                    : message?.content;
+
+                if (
+                    typeof content !== "string" ||
+                    !content.trim().startsWith(PREFIX)
+                ) {
+                    return;
+                }
+
+                const command = content.trim();
+
+                if (typeof message === "string") {
+                    args[1] = CLYDE;
+                } else {
+                    args[1] = {
+                        ...message,
+                        content: CLYDE
+                    };
+                }
+
+                setTimeout(async () => {
+                    try {
+                        const result = await executeCommand(
+                            channelId,
+                            command
+                        );
+
+                        await sendResult(channelId, result);
+                    } catch (error) {
+                        logger.error("[Alphacord]", error);
+
+                        await sendResult(
+                            channelId,
+                            "❌ Alphacord: " +
+                            (error?.message || String(error))
+                        );
+                    }
+                }, 700);
             }
         );
 
-        register(
-            "deletar-cargo",
-            "Prepara a exclusão de um cargo.",
-            [option("nome", "Nome do cargo.")],
-            args => {
-                const name = arg(args, "nome");
-
-                if (!name) return response("Informe o nome.");
-
-                record("delete-role", { name });
-
-                return response(
-                    "Cargo marcado para exclusão: " + name
-                );
-            }
-        );
+        logger.log("[Alphacord] Inicializado.");
     }
 
     return {
         onLoad() {
             try {
-                registerAll();
-                logger.log("[Alphacord] Plugin carregado!");
-                logger.log("[Alphacord] 9 comandos registrados.");
+                start();
             } catch (error) {
-                logger.error("[Alphacord] Falha:", error);
+                logger.error("[Alphacord] Falha ao iniciar:", error);
             }
         },
 
         onUnload() {
-            while (commands.length) {
-                try {
-                    commands.pop()();
-                } catch (_) {}
+            if (typeof unpatch === "function") {
+                unpatch();
+                unpatch = null;
             }
 
-            logger.log("[Alphacord] Plugin descarregado.");
+            logger.log("[Alphacord] Descarregado.");
         }
     };
-})(vendetta)
+})(vendetta);
