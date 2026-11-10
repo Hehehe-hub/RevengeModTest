@@ -1,4 +1,4 @@
-
+(() => {
 const PLUGIN_NAME = "Alphacord";
 
 const DEFAULT_DATA = {
@@ -376,7 +376,8 @@ function onUnload() {
     console.log("[Alphacord] Descarregado.");
 }
 
-export default {
+return {
     onLoad,
     onUnload
 };
+})();
